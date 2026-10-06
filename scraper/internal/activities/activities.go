@@ -381,10 +381,18 @@ func (a *Activities) WriteDocument(ctx context.Context, in WriteDocumentInput) e
 		a.mu.Unlock()
 		return nil
 	}
-	a.writtenHash[key] = true
+	a.writtenHash[key] = true // also claims the key while the write is in flight
 	a.mu.Unlock()
 
-	return a.Writer.Write(&in.Doc)
+	if err := a.Writer.Write(&in.Doc); err != nil {
+		// Release the claim so Temporal's retry writes again (e.g. S3 stored
+		// the document but Kafka failed); keeping it would drop the document.
+		a.mu.Lock()
+		delete(a.writtenHash, key)
+		a.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // maxSitemapURLs caps how many page URLs DiscoverSitemapURLs returns for
