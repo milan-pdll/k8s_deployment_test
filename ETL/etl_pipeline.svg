@@ -1,0 +1,273 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1290" width="1800" height="1290" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title>PGS Search Engine: crawl and ETL pipeline (Airflow + Temporal + Spark)</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#374151"/>
+    </marker>
+    <marker id="arrow-spark" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#C2410C"/>
+    </marker>
+    <style>
+      .title { font-size: 26px; font-weight: 700; fill: #111827; }
+      .subtitle { font-size: 14px; fill: #4B5563; }
+      .frame-label { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; }
+      .box-title { font-size: 16px; font-weight: 700; fill: #111827; }
+      .box-text { font-size: 12.5px; fill: #374151; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; fill: #1F2937; }
+      .edge { stroke: #374151; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+      .edge-dash { stroke: #374151; stroke-width: 1.6; fill: none; stroke-dasharray: 6 4; marker-end: url(#arrow); }
+      .edge-spark { stroke: #C2410C; stroke-width: 1.8; fill: none; marker-end: url(#arrow-spark); }
+      .edge-label { font-size: 12px; fill: #111827; }
+      .badge { fill: #111827; }
+      .badge-text { font-size: 12px; font-weight: 700; fill: #FFFFFF; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1290" fill="#FFFFFF"/>
+
+  <!-- Title -->
+  <text x="40" y="44" class="title">How the crawl and ETL pipeline runs</text>
+  <text x="40" y="68" class="subtitle">Airflow decides when · Temporal executes and retries · the Go scraper crawls · Spark does the per-page work · numbers follow one website from schedule to search index</text>
+
+  <!-- ===================== PostgreSQL (domains) ===================== -->
+  <g>
+    <path d="M40,118 a110,14 0 0,1 220,0 v112 a110,14 0 0,1 -220,0 z" fill="#F3F4F6" stroke="#6B7280" stroke-width="1.6"/>
+    <path d="M40,118 a110,14 0 0,0 220,0" fill="none" stroke="#6B7280" stroke-width="1.6"/>
+    <text x="150" y="156" class="box-title" text-anchor="middle">PostgreSQL</text>
+    <text x="150" y="176" class="mono" text-anchor="middle">domains</text>
+    <text x="150" y="196" class="box-text" text-anchor="middle">9,761 websites</text>
+    <text x="150" y="213" class="box-text" text-anchor="middle">756 linked to a local body</text>
+    <text x="150" y="230" class="box-text" text-anchor="middle">(their geolocation)</text>
+  </g>
+
+  <!-- ===================== Airflow frame ===================== -->
+  <rect x="300" y="88" width="1460" height="170" rx="14" fill="#F5F9FF" stroke="#017CEE" stroke-width="1.6" stroke-dasharray="7 5"/>
+  <text x="318" y="108" class="frame-label" fill="#015FB6">AIRFLOW SCHEDULER · LocalExecutor (no Celery, no Redis) · only schedules and waits</text>
+
+  <!-- DAG: scraper_crawl_schedule -->
+  <rect x="320" y="122" width="480" height="118" rx="10" fill="#E8F1FB" stroke="#017CEE" stroke-width="1.6"/>
+  <text x="340" y="148" class="box-title">DAG scraper_crawl_schedule</text>
+  <text x="340" y="170" class="box-text">every 30 min (SCRAPER_CRAWL_SCHEDULE)</text>
+  <text x="340" y="188" class="box-text">reads every website that is not PAUSED,</text>
+  <text x="340" y="206" class="box-text">starts one crawl workflow with a fixed ID,</text>
+  <text x="340" y="224" class="box-text">so a crawl still running is never doubled</text>
+
+  <!-- DAG: etl_ingestion_pipeline -->
+  <rect x="1000" y="122" width="740" height="118" rx="10" fill="#E8F1FB" stroke="#017CEE" stroke-width="1.6"/>
+  <text x="1020" y="148" class="box-title">DAG etl_ingestion_pipeline</text>
+  <text x="1260" y="148" class="box-text">every 2 min · one run at a time</text>
+  <rect x="1020" y="162" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#017CEE"/>
+  <text x="1120" y="186" class="mono" text-anchor="middle">poll_batch</text>
+  <text x="1120" y="204" class="box-text" text-anchor="middle">waits for 100 events</text>
+  <text x="1120" y="219" class="box-text" text-anchor="middle">(or the oldest 60 min)</text>
+  <rect x="1262" y="162" width="220" height="64" rx="8" fill="#FFFFFF" stroke="#017CEE"/>
+  <text x="1372" y="186" class="mono" text-anchor="middle">process_batch</text>
+  <text x="1372" y="204" class="box-text" text-anchor="middle">starts the batch workflow</text>
+  <text x="1372" y="219" class="box-text" text-anchor="middle">and waits for its result</text>
+  <rect x="1524" y="162" width="200" height="64" rx="8" fill="#FFFFFF" stroke="#017CEE"/>
+  <text x="1624" y="186" class="mono" text-anchor="middle">commit_offsets</text>
+  <text x="1624" y="204" class="box-text" text-anchor="middle">marks the events done,</text>
+  <text x="1624" y="219" class="box-text" text-anchor="middle">only if all sites succeeded</text>
+  <path d="M1220,194 L1258,194" class="edge"/>
+  <path d="M1482,194 L1520,194" class="edge"/>
+
+  <!-- ===================== Temporal frame ===================== -->
+  <rect x="300" y="300" width="1460" height="128" rx="14" fill="#F8F6FF" stroke="#6B4FD8" stroke-width="1.6" stroke-dasharray="7 5"/>
+  <text x="400" y="320" class="frame-label" fill="#4C33B8">TEMPORAL · workflows, retries, state in PostgreSQL</text>
+
+  <rect x="320" y="334" width="480" height="80" rx="10" fill="#EFEAFD" stroke="#6B4FD8" stroke-width="1.6"/>
+  <text x="340" y="358" class="box-title">CrawlDomainsWorkflow</text>
+  <text x="560" y="358" class="mono">scraper-task-queue</text>
+  <text x="340" y="380" class="box-text">one child CrawlWorkflow per website, 20 websites at a time;</text>
+  <text x="340" y="398" class="box-text">each crawls its own host up to 100 pages (configurable)</text>
+
+  <rect x="1000" y="334" width="740" height="80" rx="10" fill="#EFEAFD" stroke="#6B4FD8" stroke-width="1.6"/>
+  <text x="1020" y="358" class="box-title">EtlBatchWorkflow</text>
+  <text x="1170" y="358" class="mono">etl-task-queue</text>
+  <text x="1020" y="380" class="box-text">one run_site_pipeline activity per website, 4 at a time (ETL_SITE_CONCURRENCY);</text>
+  <text x="1020" y="398" class="box-text">a failing site is retried on its own (S3, ClamAV or Spark down); the batch fails only if it keeps failing</text>
+
+  <!-- ===================== Crawl column ===================== -->
+  <!-- headless Chrome -->
+  <rect x="40" y="490" width="220" height="74" rx="10" fill="#E6F7F5" stroke="#00A39A" stroke-width="1.4"/>
+  <text x="150" y="518" class="box-title" text-anchor="middle">headless Chrome</text>
+  <text x="150" y="538" class="box-text" text-anchor="middle">renders pages built</text>
+  <text x="150" y="554" class="box-text" text-anchor="middle">by JavaScript</text>
+
+  <!-- Go scraper worker -->
+  <rect x="320" y="468" width="480" height="122" rx="10" fill="#E6F7F5" stroke="#00A39A" stroke-width="1.6"/>
+  <text x="340" y="494" class="box-title">scraper-worker (Go)</text>
+  <text x="340" y="516" class="box-text">runs the crawl workflows' activities: robots.txt, fetch,</text>
+  <text x="340" y="534" class="box-text">render if needed, parse links, sitemap discovery</text>
+  <text x="340" y="552" class="box-text">writes every page to S3; when a website is finished,</text>
+  <text x="340" y="570" class="box-text">publishes one event for it (never one per page)</text>
+
+  <!-- S3 -->
+  <g>
+    <path d="M320,652 a240,16 0 0,1 480,0 v104 a240,16 0 0,1 -480,0 z" fill="#F3F4F6" stroke="#6B7280" stroke-width="1.6"/>
+    <path d="M320,652 a240,16 0 0,0 480,0" fill="none" stroke="#6B7280" stroke-width="1.6"/>
+    <text x="560" y="692" class="box-title" text-anchor="middle">S3 bucket crawled-pages (LocalStack)</text>
+    <text x="560" y="714" class="mono" text-anchor="middle">&lt;run&gt;/&lt;host&gt;/&lt;url-hash&gt;.json   page document</text>
+    <text x="560" y="732" class="mono" text-anchor="middle">html/&lt;host&gt;/&lt;hash&gt;.html        raw page</text>
+    <text x="560" y="750" class="mono" text-anchor="middle">pages/&lt;host&gt;/&lt;hash&gt;.json       full record</text>
+  </g>
+
+  <!-- Kafka -->
+  <rect x="826" y="468" width="150" height="160" rx="10" fill="#FFF3E6" stroke="#E07B00" stroke-width="1.6"/>
+  <text x="901" y="494" class="box-title" text-anchor="middle">Kafka</text>
+  <text x="901" y="514" class="mono" text-anchor="middle">scraped_files</text>
+  <text x="901" y="529" class="mono" text-anchor="middle">_topic</text>
+  <text x="901" y="552" class="box-text" text-anchor="middle">site_crawl_completed</text>
+  <text x="901" y="570" class="box-text" text-anchor="middle">run, host, bucket,</text>
+  <text x="901" y="586" class="box-text" text-anchor="middle">documents_prefix</text>
+  <text x="901" y="610" class="box-text" text-anchor="middle">1 event = 1 website</text>
+
+  <!-- ===================== ETL / Spark column ===================== -->
+  <!-- etl-worker (driver) -->
+  <rect x="1000" y="468" width="740" height="122" rx="10" fill="#FDECE6" stroke="#E25A1C" stroke-width="1.6"/>
+  <text x="1020" y="494" class="box-title">etl-worker · Temporal worker and Spark driver (Python)</text>
+  <text x="1020" y="516" class="box-text">holds one long-lived Spark application on the cluster; for each website (activity):</text>
+  <text x="1020" y="534" class="box-text">lists the site's pages under documents_prefix in S3, then submits one Spark job:</text>
+  <text x="1020" y="554" class="mono">sc.parallelize(page_keys).mapPartitions(process_page).collect()</text>
+  <text x="1020" y="576" class="box-text">spark/site_pipeline.py · skips a website it already wrote (safe when a batch is retried)</text>
+
+  <!-- spark-master -->
+  <rect x="1000" y="640" width="300" height="80" rx="10" fill="#FDECE6" stroke="#E25A1C" stroke-width="1.6"/>
+  <text x="1020" y="666" class="box-title">spark-master :7077</text>
+  <text x="1020" y="688" class="box-text">standalone cluster manager: hands</text>
+  <text x="1020" y="705" class="box-text">the job's tasks to free executors</text>
+
+  <!-- ClamAV -->
+  <rect x="1500" y="640" width="240" height="80" rx="10" fill="#EAF6EC" stroke="#2E8B57" stroke-width="1.6"/>
+  <text x="1620" y="666" class="box-title" text-anchor="middle">ClamAV · clamd :3310</text>
+  <text x="1620" y="688" class="box-text" text-anchor="middle">antivirus engine; every page</text>
+  <text x="1620" y="705" class="box-text" text-anchor="middle">is streamed to it</text>
+
+  <!-- spark workers -->
+  <rect x="1000" y="770" width="740" height="214" rx="12" fill="#FFF7F3" stroke="#E25A1C" stroke-width="1.6" stroke-dasharray="7 5"/>
+  <text x="1018" y="792" class="frame-label" fill="#C2410C">SPARK-WORKER ×2 · EXECUTORS</text>
+  <text x="1318" y="792" class="box-text" fill="#C2410C">one task per partition of pages, all in parallel</text>
+  <!-- executor steps -->
+  <rect x="1018" y="808" width="164" height="120" rx="8" fill="#FFFFFF" stroke="#E25A1C"/>
+  <text x="1100" y="834" class="box-title" text-anchor="middle">a. read</text>
+  <text x="1100" y="856" class="box-text" text-anchor="middle">page document and</text>
+  <text x="1100" y="872" class="box-text" text-anchor="middle">its HTML from S3</text>
+  <text x="1100" y="892" class="box-text" text-anchor="middle">(rendered HTML</text>
+  <text x="1100" y="908" class="box-text" text-anchor="middle">when there is one)</text>
+  <rect x="1200" y="808" width="164" height="120" rx="8" fill="#FFFFFF" stroke="#E25A1C"/>
+  <text x="1282" y="834" class="box-title" text-anchor="middle">b. security scan</text>
+  <text x="1282" y="856" class="box-text" text-anchor="middle">rule checks (size,</text>
+  <text x="1282" y="872" class="box-text" text-anchor="middle">extension, name) +</text>
+  <text x="1282" y="888" class="box-text" text-anchor="middle">ClamAV; infected or</text>
+  <text x="1282" y="904" class="box-text" text-anchor="middle">suspicious = dropped</text>
+  <rect x="1382" y="808" width="164" height="120" rx="8" fill="#FFFFFF" stroke="#E25A1C"/>
+  <text x="1464" y="834" class="box-title" text-anchor="middle">c. extract</text>
+  <text x="1464" y="856" class="box-text" text-anchor="middle">visible text from the</text>
+  <text x="1464" y="872" class="box-text" text-anchor="middle">HTML (no scripts or</text>
+  <text x="1464" y="888" class="box-text" text-anchor="middle">styles), normalized</text>
+  <rect x="1564" y="808" width="164" height="120" rx="8" fill="#FFFFFF" stroke="#E25A1C"/>
+  <text x="1646" y="834" class="box-title" text-anchor="middle">d. transform</text>
+  <text x="1646" y="856" class="box-text" text-anchor="middle">language, word count,</text>
+  <text x="1646" y="872" class="box-text" text-anchor="middle">SHA-256, SimHash,</text>
+  <text x="1646" y="888" class="box-text" text-anchor="middle">place names: geo</text>
+  <path d="M1182,868 L1196,868" class="edge-spark"/>
+  <path d="M1364,868 L1378,868" class="edge-spark"/>
+  <path d="M1546,868 L1560,868" class="edge-spark"/>
+  <text x="1018" y="960" class="box-text">ClamAV unreachable: the task fails and the website is retried, instead of rejecting every page as unscanned</text>
+
+  <!-- driver after collect -->
+  <rect x="1000" y="1030" width="740" height="112" rx="10" fill="#FDECE6" stroke="#E25A1C" stroke-width="1.6"/>
+  <text x="1020" y="1056" class="box-title">back on the driver (etl-worker), one website at a time</text>
+  <text x="1020" y="1080" class="box-text">e. dedup: exact (same SHA-256) and near-duplicate (SimHash within 3 bits) against earlier output and the site</text>
+  <text x="1020" y="1100" class="box-text">f. embed new text with LaBSE (768-d); a duplicate reuses its original's vector</text>
+  <text x="1020" y="1120" class="box-text">g. append the records to the JSONL output</text>
+
+  <!-- JSONL output -->
+  <g>
+    <path d="M320,1044 a240,14 0 0,1 480,0 v88 a240,14 0 0,1 -480,0 z" fill="#F3F4F6" stroke="#6B7280" stroke-width="1.6"/>
+    <path d="M320,1044 a240,14 0 0,0 480,0" fill="none" stroke="#6B7280" stroke-width="1.6"/>
+    <text x="560" y="1082" class="box-title" text-anchor="middle">transformed_documents.jsonl</text>
+    <text x="560" y="1104" class="mono" text-anchor="middle">ETL/airflow/data/processed/</text>
+    <text x="560" y="1124" class="box-text" text-anchor="middle">one record per page (PostgreSQL Silver: not wired yet)</text>
+  </g>
+
+  <!-- OpenSearch -->
+  <rect x="40" y="1030" width="220" height="112" rx="10" fill="#F3F4F6" stroke="#6B7280" stroke-width="1.6"/>
+  <text x="150" y="1058" class="box-title" text-anchor="middle">OpenSearch</text>
+  <text x="150" y="1078" class="mono" text-anchor="middle">pgs_documents</text>
+  <text x="150" y="1100" class="box-text" text-anchor="middle">loaded by the</text>
+  <text x="150" y="1116" class="box-text" text-anchor="middle">opensearch-indexer tool;</text>
+  <text x="150" y="1132" class="box-text" text-anchor="middle">searched via the API</text>
+
+  <!-- ===================== Edges ===================== -->
+  <!-- 1 domains -> crawl DAG -->
+  <path d="M260,180 L316,180" class="edge"/>
+  <circle cx="287" cy="162" r="11" class="badge"/><text x="287" y="166" class="badge-text">1</text>
+  <!-- 2 crawl DAG -> CrawlDomainsWorkflow -->
+  <path d="M360,240 L360,330" class="edge"/>
+  <circle cx="380" cy="284" r="11" class="badge"/><text x="380" y="288" class="badge-text">2</text>
+  <text x="396" y="288" class="edge-label">start workflow</text>
+  <!-- 3 workflow -> scraper worker -->
+  <path d="M560,414 L560,464" class="edge"/>
+  <circle cx="580" cy="440" r="11" class="badge"/><text x="580" y="444" class="badge-text">3</text>
+  <text x="596" y="444" class="edge-label">activities</text>
+  <!-- chrome -->
+  <path d="M316,527 L264,527" class="edge"/>
+  <!-- 4 worker -> S3 -->
+  <path d="M560,590 L560,632" class="edge"/>
+  <circle cx="580" cy="612" r="11" class="badge"/><text x="580" y="616" class="badge-text">4</text>
+  <text x="596" y="616" class="edge-label">every page</text>
+  <!-- 5 worker -> Kafka -->
+  <path d="M800,548 L822,548" class="edge"/>
+  <circle cx="811" cy="512" r="11" class="badge"/><text x="811" y="516" class="badge-text">5</text>
+  <!-- 6 Kafka -> poll_batch (route between the frames) -->
+  <path d="M901,468 L901,274 L1120,274 L1120,230" class="edge"/>
+  <circle cx="901" cy="440" r="11" class="badge"/><text x="901" y="444" class="badge-text">6</text>
+  <text x="920" y="292" class="edge-label">poll (offsets not committed yet)</text>
+  <!-- 7 process_batch -> EtlBatchWorkflow -->
+  <path d="M1372,226 L1372,330" class="edge"/>
+  <circle cx="1392" cy="284" r="11" class="badge"/><text x="1392" y="288" class="badge-text">7</text>
+  <text x="1408" y="288" class="edge-label">start batch, wait for the result</text>
+  <!-- EtlBatchWorkflow -> etl-worker -->
+  <path d="M1372,414 L1372,464" class="edge"/>
+  <circle cx="1392" cy="440" r="11" class="badge"/><text x="1392" y="444" class="badge-text">8</text>
+  <text x="1408" y="444" class="edge-label">run_site_pipeline (per website)</text>
+  <!-- driver -> master -->
+  <path d="M1150,590 L1150,636" class="edge-spark"/>
+  <text x="1162" y="618" class="edge-label">submit job</text>
+  <!-- master -> workers -->
+  <path d="M1150,720 L1150,766" class="edge-spark"/>
+  <circle cx="1170" cy="744" r="11" class="badge"/><text x="1170" y="748" class="badge-text">9</text>
+  <text x="1188" y="748" class="edge-label">tasks</text>
+  <!-- scan -> ClamAV -->
+  <path d="M1300,808 L1300,746 L1620,746 L1620,724" class="edge-spark"/>
+  <text x="1316" y="740" class="edge-label">stream bytes (INSTREAM)</text>
+  <!-- read <- S3 (executors read from S3) -->
+  <path d="M804,708 L910,708 L910,880 L1014,880" class="edge-spark"/>
+  <text x="918" y="868" class="edge-label">read pages</text>
+  <!-- workers -> driver (collect) -->
+  <path d="M1370,984 L1370,1026" class="edge-spark"/>
+  <circle cx="1390" cy="1006" r="11" class="badge"/><text x="1390" y="1010" class="badge-text">10</text>
+  <text x="1408" y="1010" class="edge-label">collect results to the driver</text>
+  <!-- driver -> JSONL -->
+  <path d="M1000,1088 L804,1088" class="edge"/>
+  <circle cx="902" cy="1070" r="11" class="badge"/><text x="902" y="1074" class="badge-text">11</text>
+  <!-- JSONL -> OpenSearch -->
+  <path d="M320,1088 L264,1088" class="edge-dash"/>
+  <!-- result back to Airflow: workflow done -> commit -->
+  <path d="M1740,374 L1772,374 L1772,194 L1728,194" class="edge-dash"/>
+  <circle cx="1772" cy="284" r="11" class="badge"/><text x="1772" y="288" class="badge-text">12</text>
+
+  <!-- ===================== Legend / notes ===================== -->
+  <rect x="40" y="1172" width="1720" height="96" rx="10" fill="#F9FAFB" stroke="#E5E7EB"/>
+  <rect x="60" y="1190" width="14" height="14" rx="3" fill="#E8F1FB" stroke="#017CEE"/><text x="82" y="1202" class="box-text">Airflow (schedules)</text>
+  <rect x="230" y="1190" width="14" height="14" rx="3" fill="#EFEAFD" stroke="#6B4FD8"/><text x="252" y="1202" class="box-text">Temporal (executes, retries)</text>
+  <rect x="440" y="1190" width="14" height="14" rx="3" fill="#E6F7F5" stroke="#00A39A"/><text x="462" y="1202" class="box-text">Go scraper</text>
+  <rect x="570" y="1190" width="14" height="14" rx="3" fill="#FFF3E6" stroke="#E07B00"/><text x="592" y="1202" class="box-text">Kafka (hand-off)</text>
+  <rect x="720" y="1190" width="14" height="14" rx="3" fill="#FDECE6" stroke="#E25A1C"/><text x="742" y="1202" class="box-text">Spark (driver, master, executors)</text>
+  <rect x="980" y="1190" width="14" height="14" rx="3" fill="#EAF6EC" stroke="#2E8B57"/><text x="1002" y="1202" class="box-text">ClamAV</text>
+  <rect x="1080" y="1190" width="14" height="14" rx="3" fill="#F3F4F6" stroke="#6B7280"/><text x="1102" y="1202" class="box-text">storage</text>
+  <path d="M1190,1197 L1236,1197" class="edge-dash"/><text x="1246" y="1202" class="box-text">manual step / result returned</text>
+  <text x="60" y="1230" class="box-text">12: when every website of the batch has succeeded, process_batch returns and commit_offsets marks the 100 events done. A failed batch commits nothing, so the next run starts the same</text>
+  <text x="60" y="1248" class="box-text">batch again (websites already written are skipped). All state lives under ./data/ on the host (PostgreSQL, Kafka, OpenSearch, ClamAV signatures, LaBSE model cache, Airflow logs).</text>
+</svg>
