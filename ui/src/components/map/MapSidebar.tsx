@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 import { ChevronRight, House, MapPin, Search, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 import type { GeoTag } from "@/lib/types";
+import { PlaceInfoCard } from "@/components/map/PlaceInfoCard";
+import { useIsDark } from "@/components/map/useIsDark";
 import {
   DISTRICT_ALIASES,
   PROVINCE_NAMES,
@@ -13,6 +15,7 @@ import {
   titleCase,
   type DistrictCollection,
   type MunicipalityCollection,
+  type ProvinceCollection,
 } from "@/lib/geo";
 
 interface SearchHit {
@@ -31,6 +34,7 @@ const LIST_BUTTON = cn(
 );
 
 export function MapSidebar({
+  provinces,
   districts,
   municipalities,
   selectedProvince,
@@ -49,6 +53,7 @@ export function MapSidebar({
   municipalitiesStatus,
   onRetryMunicipalities,
 }: {
+  provinces: ProvinceCollection | null;
   districts: DistrictCollection | null;
   municipalities: MunicipalityCollection | null;
   selectedProvince: string | null;
@@ -67,6 +72,7 @@ export function MapSidebar({
   municipalitiesStatus: "loading" | "ready" | "error";
   onRetryMunicipalities: () => void;
 }) {
+  const dark = useIsDark();
   const [query, setQuery] = useState("");
   const [labelDraft, setLabelDraft] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
@@ -346,6 +352,18 @@ export function MapSidebar({
           </form>
         )}
 
+        {!loading && (
+          <PlaceInfoCard
+            provinces={provinces}
+            districts={districts}
+            municipalities={municipalities}
+            municipalitiesStatus={municipalitiesStatus}
+            selectedProvince={selectedProvince}
+            selectedDistrict={selectedDistrict}
+            onSelectDistrict={onSelectDistrict}
+          />
+        )}
+
         <div className="p-3">
           {loading && (
             <div className="space-y-2" aria-label="Loading places">
@@ -368,7 +386,7 @@ export function MapSidebar({
                       <span className="flex items-center gap-2">
                         <span
                           className="h-3 w-3 shrink-0 rounded-full"
-                          style={{ backgroundColor: getProvinceColor(name) }}
+                          style={{ backgroundColor: getProvinceColor(name, dark) }}
                           aria-hidden
                         />
                         {name}

@@ -12,7 +12,6 @@ import {
   DISTRICT_ALIASES,
   PROVINCE_NAMES,
   getDistrictProvince,
-  getProvinceColor,
   loadStoredTags,
   saveStoredTags,
   titleCase,
@@ -263,6 +262,16 @@ export function GeoExplorer() {
     setFocusRequest({ seq: focusSeq.current, kind: "municipality", name, district });
   }
 
+  // The browser tab names the place you're looking at. (The server sets the
+  // first title; selections after that change the URL without a reload.)
+  useEffect(() => {
+    let place: string | null = null;
+    if (focusParam && districtParam) place = `${focusParam}, ${districtParam}`;
+    else if (selectedDistrict) place = `${titleCase(selectedDistrict)} district`;
+    else if (selectedProvince) place = selectedProvince;
+    document.title = place ? `${place} — Map of Nepal · PGS Search` : "Map of Nepal — PGS Search";
+  }, [focusParam, districtParam, selectedDistrict, selectedProvince]);
+
   function handleMapClick(lat: number, lng: number, district?: string) {
     if (!taggingMode) return;
     setPendingTag({ lat, lng, district });
@@ -339,6 +348,7 @@ export function GeoExplorer() {
         </div>
       </div>
       <MapSidebar
+        provinces={provinces}
         districts={districts}
         municipalities={municipalities}
         selectedProvince={selectedProvince}
@@ -366,9 +376,9 @@ export function GeoExplorer() {
 
 const PROVINCE_LIST = Object.values(PROVINCE_NAMES);
 
-// One line telling people where they are and what they can do next, plus the
-// map's color key (which doubles as a province filter). This is the page's
-// main piece of guidance, so it changes with every state.
+// One line telling people where they are and what they can do next (the color
+// key, which doubles as a province filter, is in the map's corner). This is
+// the page's main piece of guidance, so it changes with every state.
 function MapContextBar({
   selectedProvince,
   selectedDistrict,
@@ -505,35 +515,6 @@ function MapContextBar({
         </div>
         {action}
       </div>
-
-      {!loadError && (
-        // Phones: one swipeable row (keeps the map tall). Wider screens: wrap so
-        // every province is visible without a scrollbar.
-        <div className="flex items-center gap-1.5 overflow-x-auto [scrollbar-width:none] sm:flex-wrap sm:overflow-visible [&::-webkit-scrollbar]:hidden">
-          <span className="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">Provinces:</span>
-          {PROVINCE_LIST.map((name) => {
-            const isActive = selectedProvince === name;
-            return (
-              <button
-                key={name}
-                type="button"
-                aria-pressed={isActive}
-                title={isActive ? `Show all of Nepal` : `Show ${name}`}
-                onClick={() => onSelectProvince(isActive ? "" : name)}
-                className={cn(
-                  "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
-                  isActive
-                    ? "border-slate-900 bg-slate-900 font-medium text-white dark:border-white dark:bg-white dark:text-slate-900"
-                    : "border-slate-200 bg-white text-slate-700 hover:border-slate-400 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                )}
-              >
-                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: getProvinceColor(name) }} />
-                {name.replace(" Province", "")}
-              </button>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }
