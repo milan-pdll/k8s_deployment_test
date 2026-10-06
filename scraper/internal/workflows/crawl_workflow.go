@@ -415,11 +415,10 @@ func CrawlWorkflow(ctx workflow.Context, in CrawlWorkflowInput) (result CrawlRes
 	// website this crawl fetched (one for a CrawlDomainsWorkflow child): the
 	// hand-off that starts ETL for that whole site.
 	defer func() {
-		if runID == 0 {
-			return
-		}
+		// A cancelled crawl must still record its end and publish its sites.
+		ctx, _ := workflow.NewDisconnectedContext(ctx)
 		if willContinueAsNew {
-			if in.ChildOfRun {
+			if in.ChildOfRun || runID == 0 {
 				return
 			}
 			if updErr := updateCrawlRunStats(ctx, runID, stats); updErr != nil {
@@ -433,7 +432,7 @@ func CrawlWorkflow(ctx workflow.Context, in CrawlWorkflowInput) (result CrawlRes
 			status = "failed"
 			errMsg = err.Error()
 		}
-		if !in.ChildOfRun {
+		if !in.ChildOfRun && runID != 0 {
 			if finErr := finishCrawlRun(ctx, runID, status, stats, errMsg); finErr != nil {
 				logger.Warn("failed to finish crawl run", "run_id", runID, "error", finErr)
 			}

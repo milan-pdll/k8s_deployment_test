@@ -4,7 +4,7 @@ The scraper publishes one ``site_crawl_completed`` event to Kafka
 (``scraped_files_topic``) per website whose crawl has finished. This DAG
 waits until a full batch has accumulated, then:
 
-1. ``poll_batch`` reads the next ``ETL_BATCH_SIZE`` events (default 100), not
+1. ``poll_batch`` reads the next ``ETL_BATCH_SIZE`` events (default 10), not
    committing them. With fewer waiting it skips the run, unless the oldest has
    waited ``ETL_BATCH_MAX_WAIT_MINUTES`` (default 60), so the tail of a crawl
    is not held back forever;
@@ -35,7 +35,7 @@ KAFKA_TOPIC = "scraped_files_topic"
 KAFKA_GROUP = "etl-ingestion-pipeline"
 TEMPORAL_ADDRESS = os.environ.get("TEMPORAL_ADDRESS", "temporal:7233")
 ETL_TASK_QUEUE = "etl-task-queue"  # ETL/temporal/etl_workflows.py
-BATCH_SIZE = int(os.environ.get("ETL_BATCH_SIZE", "100"))
+BATCH_SIZE = int(os.environ.get("ETL_BATCH_SIZE", "10"))
 BATCH_MAX_WAIT = timedelta(minutes=int(os.environ.get("ETL_BATCH_MAX_WAIT_MINUTES", "60")))
 SITE_CONCURRENCY = int(os.environ.get("ETL_SITE_CONCURRENCY", "4"))
 

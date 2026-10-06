@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	"search-engine-scraper/internal/activities"
 	"search-engine-scraper/internal/normalize"
 )
 
@@ -19,6 +21,10 @@ const (
 	// defaultConcurrentDomains is how many domains are crawled at once when
 	// the input doesn't say.
 	defaultConcurrentDomains = 20
+	// defaultDomainBatchSize is how many domains make one batch. A batch is
+	// crawled to the end, and its site-crawled events are published, before
+	// the next batch starts, so ETL receives events in groups of this size.
+	defaultDomainBatchSize = 10
 )
 
 // CrawlDomainsInput starts (or continues) a whole-domain crawl: every seed's
@@ -33,6 +39,10 @@ type CrawlDomainsInput struct {
 	PerDomain CrawlWorkflowInput
 	// MaxConcurrentDomains is how many child domain crawls run at once.
 	MaxConcurrentDomains int
+	// DomainBatchSize is how many domains are crawled per batch (default
+	// 10). The next batch starts only after every domain of the current one
+	// has finished and published its event.
+	DomainBatchSize int
 
 	// Carried state across Continue-As-New.
 	Cursor     int
@@ -108,6 +118,14 @@ func CrawlDomainsWorkflow(ctx workflow.Context, in CrawlDomainsInput) (result Cr
 		concurrent = defaultConcurrentDomains
 	}
 
+	batchSize := in.DomainBatchSize
+	if batchSize < 1 {
+		batchSize = defaultDomainBatchSize
+	}
+	if concurrent > batchSize {
+		concurrent = batchSize
+	}
+
 	runID := in.CrawlRunID
 	if in.Cursor == 0 && runID == 0 {
 		var startErr error
@@ -120,9 +138,12 @@ func CrawlDomainsWorkflow(ctx workflow.Context, in CrawlDomainsInput) (result Cr
 	domains := in.Domains
 	cursor := in.Cursor
 	startedThisRun := 0
+	startedInBatch := 0
 	willContinueAsNew := false
 
 	defer func() {
+		// A cancelled run must still record its end.
+		actCtx, _ := workflow.NewDisconnectedContext(actCtx)
 		result = CrawlDomainsResult{Stats: stats, RunID: runID, Domains: domains}
 		if runID == 0 {
 			return
@@ -147,10 +168,11 @@ func CrawlDomainsWorkflow(ctx workflow.Context, in CrawlDomainsInput) (result Cr
 	var active []running
 
 	start := func() {
-		for len(active) < concurrent && cursor < len(groups) && startedThisRun < domainsPerRun {
+		for len(active) < concurrent && startedInBatch < batchSize && cursor < len(groups) && startedThisRun < domainsPerRun {
 			g := groups[cursor]
 			cursor++
 			startedThisRun++
+			startedInBatch++
 			domains.Started++
 
 			child := in.PerDomain
@@ -170,44 +192,82 @@ func CrawlDomainsWorkflow(ctx workflow.Context, in CrawlDomainsInput) (result Cr
 		}
 	}
 
-	start()
-	for len(active) > 0 {
-		sel := workflow.NewSelector(ctx)
-		done := -1
-		var res CrawlResult
-		var cerr error
-		for i := range active {
-			idx := i
-			sel.AddFuture(active[idx].future, func(f workflow.Future) {
-				done = idx
-				cerr = f.Get(ctx, &res)
-			})
-		}
-		sel.Select(ctx)
-
-		host := active[done].host
-		active = append(active[:done], active[done+1:]...)
-		if cerr != nil {
-			domains.Failed++
-			logger.Warn("domain crawl failed", "host", host, "error", cerr)
-		} else {
-			domains.Completed++
-			stats.Fetched += res.Stats.Fetched
-			stats.Succeeded += res.Stats.Succeeded
-			stats.Failed += res.Stats.Failed
-			stats.Skipped += res.Stats.Skipped
-			stats.DomainCapped += res.Stats.DomainCapped
-			stats.CountryFiltered += res.Stats.CountryFiltered
-		}
+	// One batch at a time: start up to batchSize domains, wait for all of
+	// them (each publishes its site event as it finishes), then the next.
+	for {
+		startedInBatch = 0
 		start()
+		if len(active) == 0 {
+			break
+		}
+		for len(active) > 0 {
+			sel := workflow.NewSelector(ctx)
+			done := -1
+			var res CrawlResult
+			var cerr error
+			for i := range active {
+				idx := i
+				sel.AddFuture(active[idx].future, func(f workflow.Future) {
+					done = idx
+					cerr = f.Get(ctx, &res)
+				})
+			}
+			sel.Select(ctx)
+
+			host := active[done].host
+			active = append(active[:done], active[done+1:]...)
+			if cerr != nil {
+				domains.Failed++
+				logger.Warn("domain crawl failed", "host", host, "error", cerr)
+				// A killed or timed-out child never ran its own end-of-crawl
+				// publish; send the failed event here so ETL still picks up
+				// whatever pages it stored.
+				var term *temporal.TerminatedError
+				var tout *temporal.TimeoutError
+				if errors.As(cerr, &term) || errors.As(cerr, &tout) {
+					pubCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+						StartToCloseTimeout:    30 * time.Second,
+						ScheduleToCloseTimeout: time.Hour,
+						RetryPolicy:            &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: time.Minute},
+					})
+					if perr := workflow.ExecuteActivity(pubCtx, act.PublishSiteCrawled, activities.PublishSiteCrawledInput{
+						RunID:       runID,
+						WorkflowID:  workflow.GetInfo(ctx).WorkflowExecution.ID,
+						Host:        host,
+						Status:      "failed",
+						Error:       cerr.Error(),
+						CompletedAt: workflow.Now(ctx),
+					}).Get(ctx, nil); perr != nil {
+						logger.Error("failed to publish site-crawled event for killed domain crawl", "host", host, "error", perr)
+					}
+				}
+			} else {
+				domains.Completed++
+				stats.Fetched += res.Stats.Fetched
+				stats.Succeeded += res.Stats.Succeeded
+				stats.Failed += res.Stats.Failed
+				stats.Skipped += res.Stats.Skipped
+				stats.DomainCapped += res.Stats.DomainCapped
+				stats.CountryFiltered += res.Stats.CountryFiltered
+			}
+			start()
+		}
 	}
 
 	if cursor < len(groups) {
 		willContinueAsNew = true
 		return CrawlDomainsResult{}, workflow.NewContinueAsNewError(ctx, CrawlDomainsWorkflow, CrawlDomainsInput{
-			Seeds: in.Seeds, PerDomain: in.PerDomain, MaxConcurrentDomains: in.MaxConcurrentDomains,
+			Seeds: in.Seeds, PerDomain: in.PerDomain, MaxConcurrentDomains: in.MaxConcurrentDomains, DomainBatchSize: in.DomainBatchSize,
 			Cursor: cursor, Stats: stats, CrawlRunID: runID, Domains: domains,
 		})
 	}
 	return CrawlDomainsResult{Stats: stats, RunID: runID, Domains: domains}, nil
+}
+
+// childWasKilled reports whether a child workflow ended by termination or
+// timeout, so its own deferred publish never ran.
+func childWasKilled(err error) bool {
+	var term *temporal.TerminatedError
+	var tout *temporal.TimeoutError
+	return errors.As(err, &term) || errors.As(err, &tout)
 }

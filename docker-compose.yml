@@ -94,14 +94,15 @@ x-airflow-common: &airflow-common
     DB_APPLICATION_NAME: pgs-airflow
     # etl_ingestion_pipeline: run the ETL once this many site events have arrived, or
     # once the oldest has waited this long.
-    ETL_BATCH_SIZE: ${ETL_BATCH_SIZE:-100}
+    ETL_BATCH_SIZE: ${ETL_BATCH_SIZE:-10}
     ETL_BATCH_MAX_WAIT_MINUTES: ${ETL_BATCH_MAX_WAIT_MINUTES:-60}
     ETL_SITE_CONCURRENCY: ${ETL_SITE_CONCURRENCY:-4}
     # scraper_crawl_schedule: when and how the websites are crawled.
     SCRAPER_CRAWL_SCHEDULE: ${SCRAPER_CRAWL_SCHEDULE:-*/30 * * * *}
     SCRAPER_MAX_PAGES_PER_DOMAIN: ${SCRAPER_MAX_PAGES_PER_DOMAIN:-100}
     SCRAPER_MAX_DEPTH: ${SCRAPER_MAX_DEPTH:-3}
-    SCRAPER_CONCURRENT_DOMAINS: ${SCRAPER_CONCURRENT_DOMAINS:-20}
+    SCRAPER_CONCURRENT_DOMAINS: ${SCRAPER_CONCURRENT_DOMAINS:-10}
+    SCRAPER_DOMAIN_BATCH_SIZE: ${SCRAPER_DOMAIN_BATCH_SIZE:-10}
     SCRAPER_REVISIT_AFTER_HOURS: ${SCRAPER_REVISIT_AFTER_HOURS:-0}
     # 3 with the scraper-sharded profile (its workers own three shard queues).
     SCRAPER_TASK_QUEUE_SHARDS: ${SCRAPER_TASK_QUEUE_SHARDS:-1}

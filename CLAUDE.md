@@ -158,7 +158,7 @@ kubectl kustomize k8/ | kubeconform -strict -kubernetes-version 1.30.0 -summary 
   (database and role `airflow`, created by `db-roles`; there is no `airflow-db`).
   `scraper_crawl_schedule` (every 30 min, `SCRAPER_CRAWL_SCHEDULE`) reads `domains` and starts
   one `CrawlDomainsWorkflow` on Temporal (fixed ID, so crawls never overlap);
-  `etl_ingestion_pipeline` waits for `ETL_BATCH_SIZE` (100) site events, then starts one
+  `etl_ingestion_pipeline` waits for `ETL_BATCH_SIZE` (10) site events, then starts one
   `EtlBatchWorkflow` on the `etl-task-queue`. `etl-worker` (`ETL/temporal/`) runs it as the
   Spark driver against the standalone cluster (`spark-master`, `spark-worker`, all on the ETL
   image, because executors need the driver's Python packages). Services that run the ETL image
