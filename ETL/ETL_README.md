@@ -27,6 +27,10 @@ described in `spark/README.md`.
 
 ## Workflow
 
+![Crawl and ETL pipeline: Airflow, Temporal, Go scraper, Kafka, Spark](etl_pipeline.svg)
+
+The same flow as text:
+
 ```text
 Airflow DAG scraper_crawl_schedule (every 30 min, SCRAPER_CRAWL_SCHEDULE)
   -> reads domains (not PAUSED) -> Temporal CrawlDomainsWorkflow "scheduled-crawl-domains"
