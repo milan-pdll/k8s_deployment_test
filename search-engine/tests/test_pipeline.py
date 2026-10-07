@@ -197,3 +197,60 @@ def test_filters_match_any_geo_tag_and_ignore_sentinels() -> None:
         {"term": {"language": "ne"}},
     ]
     assert build_filter_clauses(SearchInput(query="q", language="auto")) == []
+
+
+def _base_expansion(query: str) -> QueryExpansion:
+    return QueryExpansion(query.lower(), "en", [query.lower()], False)
+
+
+def _translating_pipeline(client: FakeOpenSearch, translator, **config: Any):
+    return FinalSearchPipeline(
+        opensearch_client=client,
+        expander=_base_expansion,
+        translator=translator,
+        config=settings.model_copy(update=config),
+    )
+
+
+def _variants(client: FakeOpenSearch) -> int:
+    return len(client.search_calls[0]["body"]["query"]["bool"]["should"])
+
+
+def test_translated_variant_is_searched_when_ready() -> None:
+    client = FakeOpenSearch(hits=[hit("1", 5.0)])
+    output = _translating_pipeline(client, lambda query, language: ("पोखरा", False)).search(
+        SearchInput(query="Pokhara")
+    )
+
+    assert _variants(client) == 2
+    assert output.stages["translation"] == "ok"
+
+
+def test_slow_translation_does_not_delay_the_search() -> None:
+    client = FakeOpenSearch(hits=[hit("1", 5.0)])
+
+    def slow(query: str, language: str) -> tuple[str, bool]:
+        time.sleep(1.0)
+        return "पोखरा", False
+
+    started = time.perf_counter()
+    output = _translating_pipeline(client, slow, translation_wait_seconds=0.05).search(
+        SearchInput(query="Pokhara")
+    )
+
+    assert time.perf_counter() - started < 0.5
+    assert _variants(client) == 1
+    assert output.stages["translation"] == "skipped: too slow"
+    assert output.degraded is False
+
+
+def test_failed_translation_degrades_but_still_searches() -> None:
+    client = FakeOpenSearch(hits=[hit("1", 5.0)])
+
+    def broken(query: str, language: str) -> tuple[str, bool]:
+        raise RuntimeError("model crashed")
+
+    output = _translating_pipeline(client, broken).search(SearchInput(query="Pokhara"))
+
+    assert _variants(client) == 1
+    assert output.degraded is True

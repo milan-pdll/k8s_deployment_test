@@ -200,8 +200,12 @@ def _translate_query(query: str, language: str) -> tuple[str, bool]:
         return "", True
 
 
-def expand_query(query: str) -> QueryExpansion:
-    """Normalize a query and expand it into search variants."""
+def expand_query(query: str, *, translate: bool = True) -> QueryExpansion:
+    """Normalize a query and expand it into search variants.
+
+    `translate=False` skips the (slow) NLLB translation; the caller can run
+    `translate_query` itself, off the request's critical path.
+    """
     normalized = normalize_query(query)
     terms = [normalized]
     lemma_variant = " ".join(lemmatize(normalized))
@@ -214,12 +218,21 @@ def expand_query(query: str) -> QueryExpansion:
         if equivalent:
             terms.append(equivalent)
     language = detect_language(query)
-    # The original casing translates better (proper nouns); whitespace is collapsed.
-    translated, failed = _translate_query(" ".join(query.split()), language)
-    if translated:
-        terms.append(translated)
+    failed = False
+    if translate:
+        translated, failed = translate_query(query, language)
+        if translated:
+            terms.append(translated)
     variants = [term for term in dict.fromkeys(terms) if term][:MAX_VARIANTS]
     return QueryExpansion(normalized, language, variants, failed)
+
+
+def translate_query(query: str, language: str) -> tuple[str, bool]:
+    """The query in the other language, as (translation, failed). Blocking: model call.
+
+    The original casing translates better (proper nouns); whitespace is collapsed.
+    """
+    return _translate_query(" ".join(query.split()), language)
 
 
 def expand_query_terms(query: str) -> list[str]:
