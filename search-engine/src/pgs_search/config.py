@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     search_grpc_host: str = "0.0.0.0"
     search_grpc_port: int = 50051
     search_grpc_workers: int = Field(default=8, gt=0)
+    # TLS for the gRPC port: both files set = TLS (clients need the CA); neither = plaintext
+    # (private network only). Mount the PEM files into the container.
+    search_grpc_tls_cert_file: str | None = None
+    search_grpc_tls_key_file: str | None = None
     search_grpc_max_message_bytes: int = Field(default=4 * 1024 * 1024, gt=0)
 
     # --- Indexer (Silver -> OpenSearch) ---------------------------------------------

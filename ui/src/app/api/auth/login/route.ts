@@ -25,13 +25,15 @@ export async function POST(request: NextRequest) {
     body: credentials,
   });
   if (!result.ok) {
-    const status = result.status === 401 ? 401 : result.status === 503 ? 503 : 502;
+    const status = [401, 429, 503].includes(result.status) ? result.status : 502;
     const error =
       status === 401
         ? "Invalid username/email or password."
-        : status === 503
-          ? "Sign-in is not available (the API has no API_AUTH_SECRET)."
-          : "Sign-in failed; try again later.";
+        : status === 429
+          ? "Too many failed attempts. Try again in a few minutes."
+          : status === 503
+            ? "Sign-in is not available (the API has no API_AUTH_SECRET)."
+            : "Sign-in failed; try again later.";
     return NextResponse.json({ error }, { status });
   }
 

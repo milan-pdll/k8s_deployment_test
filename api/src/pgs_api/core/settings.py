@@ -22,6 +22,7 @@ ENV_VARS: dict[str, str] = {
     "DATABASE_URL": "database_url",
     "SEARCH_GRPC_HOST": "search_grpc_host",
     "SEARCH_GRPC_PORT": "search_grpc_port",
+    "SEARCH_GRPC_TLS_CA_FILE": "search_grpc_tls_ca_file",
     "SEARCH_TIMEOUT_SECONDS": "search_timeout_seconds",
     "API_AUTH_SECRET": "auth_secret",
     "API_TOKEN_TTL_SECONDS": "token_ttl_seconds",
@@ -45,6 +46,9 @@ class Settings(BaseModel):
     database_url: SecretStr
     search_grpc_host: str = Field(default="localhost", min_length=1)
     search_grpc_port: int = Field(default=50051, ge=1, le=65535)
+    # PEM file of the CA that signed the search engine's certificate: set = the channel uses
+    # TLS; unset = plaintext (private network only).
+    search_grpc_tls_ca_file: str | None = None
     # Deadline of one ExecuteSearch call.
     search_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
     # Unset: the API serves search, geo and health, and the auth/admin endpoints answer 503.

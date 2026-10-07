@@ -13,7 +13,7 @@
 # None of the binaries touches the PostgreSQL schema: the Python pgs-db migrations own it.
 
 # Keep in step with the `go` directive in go.mod.
-ARG GO_VERSION=1.26
+ARG GO_VERSION=1.26.6
 
 FROM golang:${GO_VERSION}-alpine AS build
 WORKDIR /src
