@@ -1,65 +1,112 @@
-import { AlertTriangle, Database, Globe2, Search, ShieldAlert, Timer } from "lucide-react";
+import { CircleX, Database, FileStack, Globe, HardDrive } from "lucide-react";
+import { Section } from "@/components/dashboard/Section";
+import { StatusBanner } from "@/components/dashboard/StatusBanner";
 import { StatCard } from "@/components/dashboard/StatCard";
+import { RefreshButton } from "@/components/dashboard/RefreshButton";
+import { PipelineFlow } from "@/components/dashboard/PipelineFlow";
+import { WebsiteStatus } from "@/components/dashboard/WebsiteStatus";
+import { SearchTrafficPanel } from "@/components/dashboard/SearchTrafficPanel";
+import { SecurityPanel } from "@/components/dashboard/SecurityPanel";
+import { formatBytes, formatClock, formatCompact, formatNumber, timeAgo } from "@/components/dashboard/format";
 import { apiFetch } from "@/lib/api/server";
-import { isAdminSummary } from "@/lib/api/types";
+import { isAdminSummary, isReadinessReport } from "@/lib/api/types";
 import { getSessionToken } from "@/lib/auth/session";
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+// Everything on this page comes from the API: GET /api/v1/admin/summary for the
+// numbers and GET /health/ready for the status banner, fetched together.
+async function loadDashboard() {
+  const token = await getSessionToken();
+  const [summary, readiness] = await Promise.all([
+    apiFetch("/api/v1/admin/summary", isAdminSummary, { token: token ?? undefined }),
+    apiFetch("/health/ready", isReadinessReport),
+  ]);
+  return { summary, readiness, now: Date.now() };
 }
 
 export default async function DashboardPage() {
-  const token = await getSessionToken();
-  const result = await apiFetch("/api/v1/admin/summary", isAdminSummary, { token: token ?? undefined });
+  const { summary: result, readiness, now } = await loadDashboard();
 
   if (!result.ok) {
     return (
-      <p role="alert" className="rounded-lg bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-500/10 dark:text-rose-300">
-        The dashboard summary is unavailable: {result.error}
-      </p>
+      <div className="mx-auto max-w-xl py-12 text-center">
+        <CircleX className="mx-auto h-10 w-10 text-rose-500" aria-hidden />
+        <h1 className="mt-4 text-xl font-semibold text-slate-900 dark:text-slate-50">The dashboard couldn&rsquo;t load</h1>
+        <p role="alert" className="mt-2 text-sm text-slate-600 dark:text-slate-400">
+          {result.error}
+        </p>
+        <div className="mt-6 flex justify-center">
+          <RefreshButton />
+        </div>
+      </div>
     );
   }
 
   const summary = result.data;
-  const traffic = summary.search_traffic;
-  const errors = summary.errors_last_24h;
-  return (
-    <div className="space-y-6">
-      <p className="text-xs text-slate-500 dark:text-slate-400">
-        As of {new Date(summary.timestamp).toISOString().replace("T", " ").slice(0, 19)} UTC
-      </p>
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
-        <StatCard label="Websites registered" value={summary.domains.total_registered} icon={Globe2} tone="blue" />
-        <StatCard label="Pages stored" value={summary.storage.total_raw_files} icon={Database} tone="emerald" />
-        <StatCard label="Pages waiting for the ETL" value={summary.storage.unprocessed_files} icon={Timer} tone="amber" />
-        <StatCard label="Searches (last 24 h)" value={traffic.searches} icon={Search} tone="blue" />
-        <StatCard
-          label="Search p95 latency"
-          value={traffic.p95_latency_ms === null ? "–" : Math.round(traffic.p95_latency_ms)}
-          unit={traffic.p95_latency_ms === null ? undefined : "ms"}
-          icon={Timer}
-          tone="emerald"
-        />
-        <StatCard label="Quarantined files" value={summary.quarantine.count} icon={ShieldAlert} tone="rose" />
-      </div>
+  const { domains, storage } = summary;
+  const waiting = storage.unprocessed_files + storage.processing_files;
 
-      <section className="rounded-xl border border-slate-200 bg-white p-4 text-sm dark:border-slate-800 dark:bg-slate-900">
-        <h2 className="mb-3 flex items-center gap-2 font-semibold text-slate-900 dark:text-slate-100">
-          <AlertTriangle className="h-4 w-4 text-amber-500" />
-          Errors reported in the last 24 hours
-        </h2>
-        <dl className="grid grid-cols-3 gap-4 text-slate-600 dark:text-slate-300">
-          <div><dt className="text-xs">Warnings</dt><dd className="text-lg">{errors.WARN}</dd></div>
-          <div><dt className="text-xs">Errors</dt><dd className="text-lg">{errors.ERROR}</dd></div>
-          <div><dt className="text-xs">Fatal</dt><dd className="text-lg">{errors.FATAL}</dd></div>
-        </dl>
-        <p className="mt-3 text-xs text-slate-500 dark:text-slate-400">
-          Storage used: {formatBytes(summary.storage.total_storage_used_bytes)} · zero-result
-          searches: {(traffic.zero_result_rate * 100).toFixed(1)}%
-        </p>
-      </section>
+  return (
+    <div className="space-y-10">
+      <Section
+        id="overview"
+        title="Overview"
+        description={`How the search engine is doing. Updated ${formatClock(summary.timestamp)} NPT.`}
+        action={<RefreshButton />}
+      >
+        <div className="space-y-4">
+          <StatusBanner readiness={readiness} />
+          <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+            <StatCard
+              label="Websites tracked"
+              value={formatNumber(domains.total_registered)}
+              hint={`${formatNumber(domains.active_crawling)} crawling now · ${formatNumber(domains.failed_or_blocked)} failed or blocked`}
+              icon={Globe}
+              tone="blue"
+            />
+            <StatCard
+              label="Pages processed"
+              value={formatCompact(storage.processed_files)}
+              hint="Ready for search"
+              icon={FileStack}
+              tone="emerald"
+            />
+            <StatCard
+              label="Waiting to process"
+              value={formatCompact(waiting)}
+              hint={
+                storage.oldest_unprocessed_at
+                  ? `Oldest waiting ${timeAgo(storage.oldest_unprocessed_at, now)}`
+                  : "The queue is empty"
+              }
+              icon={Database}
+              tone="amber"
+            />
+            <StatCard
+              label="Storage used"
+              value={formatBytes(storage.total_storage_used_bytes)}
+              hint={`${formatCompact(storage.total_raw_files)} pages stored`}
+              icon={HardDrive}
+              tone="violet"
+            />
+          </div>
+        </div>
+      </Section>
+
+      <Section id="pipeline" title="Pipeline" description="How a web page becomes a search result, and how much is waiting at each step.">
+        <PipelineFlow summary={summary} now={now} />
+      </Section>
+
+      <Section id="websites" title="Websites" description="Where each registered website is in the crawl.">
+        <WebsiteStatus domains={domains} />
+      </Section>
+
+      <Section id="search" title="Search traffic" description="How people are using search.">
+        <SearchTrafficPanel traffic={summary.search_traffic} />
+      </Section>
+
+      <Section id="security" title="Errors & security" description="Problems the services reported, and files the virus scanner blocked.">
+        <SecurityPanel errors={summary.errors_last_24h} quarantine={summary.quarantine} now={now} />
+      </Section>
     </div>
   );
 }
