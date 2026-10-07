@@ -84,7 +84,10 @@ def scraper_crawl_schedule():
         # decoding matches these field names.
         crawl = {
             "Seeds": seeds,
-            "MaxConcurrentDomains": _env_int("SCRAPER_CONCURRENT_DOMAINS", 20),
+            "MaxConcurrentDomains": _env_int("SCRAPER_CONCURRENT_DOMAINS", 10),
+            # Domains are crawled in batches: the next batch starts when the
+            # whole previous one has published its site events.
+            "DomainBatchSize": _env_int("SCRAPER_DOMAIN_BATCH_SIZE", 10),
             "PerDomain": {
                 "MaxDepth": _env_int("SCRAPER_MAX_DEPTH", 3),
                 "MaxPages": _env_int("SCRAPER_MAX_PAGES_PER_DOMAIN", 100),

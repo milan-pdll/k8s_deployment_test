@@ -4,7 +4,7 @@ The scraper publishes one ``site_crawl_completed`` event to Kafka
 (``scraped_files_topic``) per website whose crawl has finished. This DAG
 waits until a full batch has accumulated, then:
 
-1. ``poll_batch`` reads the next ``ETL_BATCH_SIZE`` events (default 100), not
+1. ``poll_batch`` reads the next ``ETL_BATCH_SIZE`` events (default 10), not
    committing them. With fewer waiting it skips the run, unless the oldest has
    waited ``ETL_BATCH_MAX_WAIT_MINUTES`` (default 60), so the tail of a crawl
    is not held back forever;
