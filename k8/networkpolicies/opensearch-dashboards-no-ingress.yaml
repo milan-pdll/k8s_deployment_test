@@ -1,0 +1,13 @@
+# opensearch-dashboards is an admin tool with no authentication of its own: no pod in the cluster
+# may reach it. Use `kubectl port-forward` (it bypasses NetworkPolicy). Needs a CNI that
+# enforces NetworkPolicy (e.g. Calico, Cilium).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opensearch-dashboards-no-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opensearch-dashboards
+  policyTypes: ["Ingress"]
+  ingress: []

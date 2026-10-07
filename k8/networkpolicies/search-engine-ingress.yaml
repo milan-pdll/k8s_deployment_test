@@ -1,0 +1,18 @@
+# The search engine's gRPC port has no TLS or authentication, so only the API gateway may
+# reach it. Needs a CNI that enforces NetworkPolicy (e.g. Calico, Cilium).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: search-engine-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: search-engine
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+      ports:
+        - { protocol: TCP, port: 50051 }

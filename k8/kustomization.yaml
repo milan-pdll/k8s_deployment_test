@@ -62,6 +62,7 @@ resources:
   # Temporal runs both the crawl workflows and the ETL batch workflows.
   - deployments/temporal.yaml
   - deployments/temporal-ui.yaml
+  - networkpolicies/temporal-ui-no-ingress.yaml
   # The ETL: Spark standalone cluster + the Temporal ETL worker (the Spark driver).
   - deployments/spark-master.yaml
   - deployments/spark-worker.yaml
@@ -81,6 +82,7 @@ resources:
   # - services/search-engine.yaml
   # - deployments/search-engine.yaml
   # - deployments/search-indexer.yaml
+  # - networkpolicies/search-engine-ingress.yaml   # only the api may call the gRPC port
 
   # --- scraper: Go crawler, LocalStack S3 (+browser) and headless Chrome. The worker
   #     writes pages to S3 and publishes one event per crawled website to Kafka
@@ -101,6 +103,7 @@ resources:
   # - deployments/scraper-worker.yaml
   # - deployments/scraper-api.yaml
   # - networkpolicies/chrome-egress.yaml
+  # - networkpolicies/s3-browser-no-ingress.yaml
 
   # --- scraper-sharded (with `scraper`): three host-sharded workers instead of the
   #     scraper-worker Deployment. Also uncomment the patch under `patches:` below.
@@ -115,6 +118,7 @@ resources:
   # --- tools: OpenSearch Dashboards. (One-off tools are Jobs in jobs/on-demand/.)
   # - services/opensearch-dashboards.yaml
   # - deployments/opensearch-dashboards.yaml
+  # - networkpolicies/opensearch-dashboards-no-ingress.yaml
 
 # scraper-sharded: scale the plain worker Deployment to 0 so only the shards run.
 # patches:

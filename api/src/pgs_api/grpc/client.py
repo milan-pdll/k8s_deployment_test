@@ -117,7 +117,7 @@ def to_search_error(exc: grpc.RpcError, timeout_seconds: float) -> SearchError:
 
 
 class GrpcSearchClient:
-    """`SearchBackend` over one insecure channel (the engine is on the private network)."""
+    """`SearchBackend` over one channel: TLS when a CA file is given, else plaintext (private network)."""
 
     def __init__(
         self,
@@ -125,12 +125,18 @@ class GrpcSearchClient:
         *,
         timeout_seconds: float,
         health_timeout_seconds: float = HEALTH_TIMEOUT_SECONDS,
+        tls_ca_file: str | None = None,
     ) -> None:
         self.target = target
         self.timeout_seconds = timeout_seconds
         self.health_timeout_seconds = health_timeout_seconds
         # Connects lazily: the API starts (and serves geo/admin) while the engine is down.
-        self._channel = grpc.insecure_channel(target, options=CHANNEL_OPTIONS)
+        if tls_ca_file:
+            with open(tls_ca_file, "rb") as ca:
+                credentials = grpc.ssl_channel_credentials(root_certificates=ca.read())
+            self._channel = grpc.secure_channel(target, credentials, options=CHANNEL_OPTIONS)
+        else:
+            self._channel = grpc.insecure_channel(target, options=CHANNEL_OPTIONS)
         self._execute_search = self._channel.unary_unary(
             _EXECUTE_SEARCH,
             request_serializer=SearchRequest.SerializeToString,

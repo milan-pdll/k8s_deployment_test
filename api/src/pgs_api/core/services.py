@@ -37,7 +37,9 @@ class Services:
 def build_services(settings: Settings) -> Services:
     db = PgDatabase(settings.database_url.get_secret_value())
     search = GrpcSearchClient(
-        settings.search_target, timeout_seconds=settings.search_timeout_seconds
+        settings.search_target,
+        timeout_seconds=settings.search_timeout_seconds,
+        tls_ca_file=settings.search_grpc_tls_ca_file,
     )
     tokens = (
         TokenCodec(settings.auth_secret.get_secret_value(), settings.token_ttl_seconds)

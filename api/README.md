@@ -31,6 +31,7 @@ scripts/create_admin.py <username> --email <address>`.
 | --- | --- | --- |
 | `DATABASE_URL` | required | `postgresql+psycopg://pgs_api:...@postgres:5432/pgs` |
 | `SEARCH_GRPC_HOST` / `SEARCH_GRPC_PORT` | `localhost` / `50051` | the search engine |
+| `SEARCH_GRPC_TLS_CA_FILE` | unset (plaintext) | PEM CA that signed the search engine's certificate; set = TLS (the engine needs `SEARCH_GRPC_TLS_CERT_FILE` / `SEARCH_GRPC_TLS_KEY_FILE`) |
 | `SEARCH_TIMEOUT_SECONDS` | `5` (compose: 8) | gRPC deadline per search |
 | `API_AUTH_SECRET` | unset | enables login/admin; unset -> those answer 503 |
 | `API_TOKEN_TTL_SECONDS` | `28800` | token lifetime |

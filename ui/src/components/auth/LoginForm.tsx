@@ -9,7 +9,11 @@ export function LoginForm() {
   const searchParams = useSearchParams();
   // Only same-site paths: an absolute ?next= would be an open redirect.
   const requested = searchParams.get("next") ?? "";
-  const next = requested.startsWith("/") && !requested.startsWith("//") ? requested : "/dashboard";
+  // Browsers read "/\host" like "//host", so backslashes are refused too.
+  const next =
+    requested.startsWith("/") && !requested.startsWith("//") && !requested.includes("\\")
+      ? requested
+      : "/dashboard";
 
   const [login, setLogin] = useState("");
   const [password, setPassword] = useState("");

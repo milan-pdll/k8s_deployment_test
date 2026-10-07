@@ -110,6 +110,20 @@ def build_server(pipeline: Any, health_servicer: health.HealthServicer) -> grpc.
     return server
 
 
+def _bind(server: grpc.Server, address: str) -> None:
+    """TLS when a certificate and key are configured, else plaintext."""
+    cert_file, key_file = settings.search_grpc_tls_cert_file, settings.search_grpc_tls_key_file
+    if bool(cert_file) != bool(key_file):
+        raise RuntimeError("set both SEARCH_GRPC_TLS_CERT_FILE and SEARCH_GRPC_TLS_KEY_FILE")
+    if cert_file and key_file:
+        with open(cert_file, "rb") as cert, open(key_file, "rb") as key:
+            credentials = grpc.ssl_server_credentials([(key.read(), cert.read())])
+        server.add_secure_port(address, credentials)
+        logger.info("search gRPC server uses TLS")
+    else:
+        server.add_insecure_port(address)
+
+
 def serve() -> None:
     from pgs_search.client.opensearch import get_opensearch_client
     from pgs_search.indexing.index_manager import ensure_index
@@ -121,7 +135,7 @@ def serve() -> None:
     health_servicer = health.HealthServicer()
     server = build_server(default_pipeline(), health_servicer)
     address = f"{settings.search_grpc_host}:{settings.search_grpc_port}"
-    server.add_insecure_port(address)
+    _bind(server, address)
     server.start()
     for name in ("", SERVICE_NAME):
         health_servicer.set(name, health_pb2.HealthCheckResponse.SERVING)
