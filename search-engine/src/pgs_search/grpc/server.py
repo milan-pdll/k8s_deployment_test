@@ -78,7 +78,7 @@ def preload_search_runtime() -> None:
     configure_native_thread_environment()
     preload_lightgbm_reranker()
     configure_pytorch_threads()
-    if settings.translation_enabled:
+    if settings.translation_enabled and settings.translation_backend == "local":
         from pgs_search.query.translation import get_model_and_tokenizer
 
         get_model_and_tokenizer()
