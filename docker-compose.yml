@@ -526,6 +526,8 @@ services:
     networks:
       - pgs-network
     image: clamav/clamav:1.4
+    # The tag has no linux/arm64 manifest; Apple Silicon runs it under emulation.
+    platform: ${CLAMAV_PLATFORM:-linux/amd64}
     volumes:
       - {type: volume, source: data-clamav, target: /var/lib/clamav, volume: {nocopy: true}}
     depends_on:
