@@ -67,14 +67,18 @@ spec:
               value: postgresql+psycopg://pgs_api:$(PGS_API_DB_PASSWORD)@postgres:5432/$(POSTGRES_DB)
             - name: DB_APPLICATION_NAME
               value: pgs-api
+            - { name: SEARCH_TIMEOUT_SECONDS, value: "8" }
+            - name: API_AUTH_SECRET
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: API_AUTH_SECRET, optional: true }
           readinessProbe:
             httpGet:
-              path: /
+              path: /health/ready
               port: http
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /
+              path: /health/live
               port: http
             initialDelaySeconds: 20
             periodSeconds: 20

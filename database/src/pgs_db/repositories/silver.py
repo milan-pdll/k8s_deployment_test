@@ -37,8 +37,8 @@ from ..enums import (
 from ..models import (
     CrawledDocument,
     EmbeddingModel,
-    LocalBody,
     Entity,
+    LocalBody,
     Page,
     PageContact,
     PageEmbedding,

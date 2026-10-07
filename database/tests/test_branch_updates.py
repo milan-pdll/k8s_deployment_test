@@ -74,7 +74,8 @@ class TestKafkaPath:
 
         bronze = session.get(CrawledDocument, saved.crawled_document_id)
         assert bronze is not None
-        assert (bronze.normalized_url, bronze.crawl_run_id) == (message["url"], message["crawl_run_id"])
+        expected = (message["url"], message["crawl_run_id"])
+        assert (bronze.normalized_url, bronze.crawl_run_id) == expected
         run = session.get(CrawlRun, message["crawl_run_id"])
         assert run is not None and run.status == CrawlRunStatus.RUNNING  # placeholder
         page = session.get(Page, saved.page_id)
@@ -159,8 +160,8 @@ class TestUiMapFiles:
         return ReferenceRepository(session)
 
     def test_legacy_property_names_the_ui_reads(self, ref: ReferenceRepository) -> None:
-        provinces = {f["properties"]["code"]: f["properties"]
-                     for f in ref.boundaries_geojson("province", legacy_properties=True)["features"]}
+        geojson = ref.boundaries_geojson("province", legacy_properties=True)
+        provinces = {f["properties"]["code"]: f["properties"] for f in geojson["features"]}
         assert (provinces["P4"]["ADM1_PCODE"], provinces["P4"]["ADM1_EN"]) == ("NP04", "4")
 
         kaski = next(f["properties"] for f in ref.boundaries_geojson(

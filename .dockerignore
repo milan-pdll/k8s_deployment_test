@@ -31,12 +31,14 @@ database/tests
 database/docs
 database/*.png
 
-# ETL/: runtime state written by Airflow, the DAGs and the Kafka consumer; docs
-ETL/airflow/logs/*
-ETL/airflow/data/processed
-ETL/kafka/*.sqlite3*
+# ETL/: Airflow runtime state, the old JSONL output directory, docs and diagrams
+ETL/airflow/logs
+ETL/airflow/data
 ETL/*.png
+ETL/*.svg
+ETL/*.tex
 ETL/**/*.md
 
-# search-engine/: tests are not shipped
+# search-engine/: tests and the reranker's training data are not shipped
 search-engine/tests
+search-engine/training_data

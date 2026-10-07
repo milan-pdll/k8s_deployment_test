@@ -1,3 +1,33 @@
+# PGS UI (Next.js)
+
+## What is implemented
+
+- `/` search box, `/search?q=&page=` results from the API (`GET /api/v1/search`, called by
+  the Next server -- `src/lib/api/server.ts`), with real counts, errors and pagination.
+- `/map`: the interactive Nepal map (`src/components/map/`, GeoJSON in `public/data/`); a
+  region's popup links to the search for that place.
+- `/login` and `/dashboard`: admin login through `POST /api/v1/auth/login` (the API's signed
+  token in an httpOnly, SameSite=Lax cookie, Secure over https); the dashboard layout
+  verifies the token with `GET /api/v1/auth/me` on every request and shows
+  `GET /api/v1/admin/summary`. `src/proxy.ts` (Next 16's middleware) only redirects requests
+  without a session cookie.
+- Server configuration (runtime, validated at startup in `src/lib/env.ts`):
+  `API_INTERNAL_URL` (default `http://api:8000`), `API_TIMEOUT_MS`, `SESSION_COOKIE_SECURE`
+  (auto/always/never). Nothing is inlined at build time; browsers never call the API
+  directly except through the same-origin nginx routes.
+
+```bash
+npm ci && API_INTERNAL_URL=http://localhost:8000 npm run dev
+npm run lint && npx tsc --noEmit && npm run build
+```
+
+Not implemented from the specification below: i18n, the cluster/node metrics, domain manager,
+storage, logs and malware-audit admin pages, and per-region news feeds.
+
+---
+
+# Original specification (target design)
+
 # System Architecture & Implementation Specification
 
 ## Next.js Frontend Application (User Portal & Admin Dashboard)

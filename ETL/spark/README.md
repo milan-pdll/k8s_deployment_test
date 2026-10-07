@@ -1,3 +1,13 @@
+> **Status: target design, not the implementation.** What runs today is described in
+> [`../ETL_README.md`](../ETL_README.md) and [`../../docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
+> Differences from this document: there are no Redis Bloom filters (URL dedup is the
+> crawler's own, content dedup happens when Silver saves a page); raw pages are in S3
+> (LocalStack locally), not MinIO; Kafka carries one `site_crawl_completed` event per
+> website, not per file; ClamAV runs in the Spark executors, and nothing is moved to a
+> quarantine bucket; Spark's output goes to PostgreSQL Silver through `pgs_db`, and a
+> separate search indexer -- not Spark -- writes OpenSearch; geo-tagging uses the
+> website's local body only.
+
 # System Architecture & Technical Design Specification
 
 ## Distributed Web Scraping, Filtration, Security, Geo-Tagging & Spark/Kafka ETL Pipeline

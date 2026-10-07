@@ -1,0 +1,19 @@
+# Build context: ui/ -- dependencies are installed inside the image from
+# package-lock.json, and the build output is produced there too.
+node_modules
+.next
+out
+coverage
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+
+.git
+.env*
+*.log
+npm-debug.log*
+.DS_Store
+*.pem
+
+Dockerfile
+.dockerignore

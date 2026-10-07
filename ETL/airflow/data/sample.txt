@@ -1,3 +1,0 @@
-This is a plain text validation file.
-It simulates a document the scraper team might collect.
-Used only to test Airflow's file-processing task.

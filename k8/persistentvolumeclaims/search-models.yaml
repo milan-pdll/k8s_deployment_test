@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: search-models # Hugging Face cache (NLLB-200 ~2.5 GB, MiniLM)
+  name: search-models # Hugging Face cache (NLLB-200 ~2.5 GB, LaBSE ~1.8 GB)
   labels:
     app.kubernetes.io/name: search-engine
 spec:

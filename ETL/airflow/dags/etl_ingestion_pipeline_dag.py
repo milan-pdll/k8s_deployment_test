@@ -10,17 +10,21 @@ waits until a full batch has accumulated, then:
    is not held back forever;
 2. ``process_batch`` starts one ``EtlBatchWorkflow`` on Temporal for the batch
    and waits for it. The ETL worker (ETL/temporal) runs it as the Spark driver,
-   on the Spark cluster: per site, security scan, extraction, dedup,
-   embedding and output (ETL/spark/site_pipeline.py);
+   on the Spark cluster: per site, security scan, extraction, embedding and the
+   save to PostgreSQL (ETL/spark/site_pipeline.py). A site the ETL gives up on
+   is dead-lettered (error_logs) and does not hold the batch back;
 3. ``commit_offsets`` commits the batch once the workflow succeeded, so a
-   failed batch is read and run again.
+   failed batch is read and run again (at-least-once; the ETL is idempotent).
 
 Airflow only schedules and tracks; the work itself runs on Temporal and Spark.
+Messages that are not valid site events are logged and committed with their batch,
+so one bad message cannot block the topic.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
@@ -30,14 +34,16 @@ from airflow.decorators import dag, task
 from airflow.exceptions import AirflowSkipException
 
 SPARK_LIB = "/opt/airflow/spark_lib"
-KAFKA_BOOTSTRAP = "kafka:29092"
+KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BROKERS", "kafka:29092")
 KAFKA_TOPIC = "scraped_files_topic"
 KAFKA_GROUP = "etl-ingestion-pipeline"
 TEMPORAL_ADDRESS = os.environ.get("TEMPORAL_ADDRESS", "temporal:7233")
 ETL_TASK_QUEUE = "etl-task-queue"  # ETL/temporal/etl_workflows.py
-BATCH_SIZE = int(os.environ.get("ETL_BATCH_SIZE", "100"))
+BATCH_SIZE = int(os.environ.get("ETL_BATCH_SIZE", "10"))
 BATCH_MAX_WAIT = timedelta(minutes=int(os.environ.get("ETL_BATCH_MAX_WAIT_MINUTES", "60")))
 SITE_CONCURRENCY = int(os.environ.get("ETL_SITE_CONCURRENCY", "4"))
+
+log = logging.getLogger("airflow.task")
 
 
 def _site_consumer():
@@ -46,7 +52,7 @@ def _site_consumer():
     from kafka import KafkaConsumer, TopicPartition
 
     consumer = KafkaConsumer(
-        bootstrap_servers=[KAFKA_BOOTSTRAP],
+        bootstrap_servers=KAFKA_BOOTSTRAP.split(","),
         group_id=KAFKA_GROUP,
         enable_auto_commit=False,
         auto_offset_reset="earliest",
@@ -85,7 +91,7 @@ def etl_ingestion_pipeline():
         so one bad message can't block the topic)."""
         if SPARK_LIB not in sys.path:
             sys.path.insert(0, SPARK_LIB)
-        from site_pipeline import validate_event
+        from site_event import validate_event
 
         consumer = _site_consumer()
         polled: list[dict] = []
@@ -113,14 +119,20 @@ def etl_ingestion_pipeline():
                         try:
                             event = validate_event(json.loads(message.value))
                         except ValueError as exc:  # also json.JSONDecodeError
-                            where = f"partition {message.partition} offset {message.offset}"
-                            print(f"skipping {where}: {exc}")
+                            log.warning(
+                                "skipping partition %s offset %s: %s",
+                                message.partition,
+                                message.offset,
+                                exc,
+                            )
                             event = None
                         position = {"partition": message.partition, "offset": message.offset}
                         polled.append({**position, "event": event})
         finally:
             consumer.close(autocommit=False)
 
+        if not polled:
+            raise AirflowSkipException("site events are waiting but none could be read in time")
         if len(polled) < BATCH_SIZE:
             waited = timedelta(milliseconds=time.time() * 1000 - (oldest_ms or 0))
             if waited < BATCH_MAX_WAIT:
@@ -129,8 +141,8 @@ def etl_ingestion_pipeline():
                     f"{len(polled)}/{BATCH_SIZE} site events waiting; the oldest is "
                     f"{minutes:.0f} min old (flushed after {BATCH_MAX_WAIT})"
                 )
-            print(f"flushing a partial batch: the oldest event waited {waited}")
-        print(f"batch of {sum(1 for item in polled if item['event'])} site(s)")
+            log.info("flushing a partial batch: the oldest event waited %s", waited)
+        log.info("batch of %d site(s)", sum(1 for item in polled if item["event"]))
         return polled
 
     @task(execution_timeout=timedelta(hours=12))
@@ -160,16 +172,25 @@ def etl_ingestion_pipeline():
                     # A failed batch runs again under the same ID; a finished one is reused.
                     id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE_FAILED_ONLY,
                 )
-                print(f"started Temporal workflow {workflow_id} for {len(events)} site(s)")
+                log.info("started Temporal workflow %s for %d site(s)", workflow_id, len(events))
             except WorkflowAlreadyStartedError:
                 handle = client.get_workflow_handle(workflow_id)
-                print(f"waiting for the existing Temporal workflow {workflow_id}")
+                log.info("waiting for the existing Temporal workflow %s", workflow_id)
             return await handle.result()
 
         result = asyncio.run(run())
         for summary in result["summaries"]:
-            print(json.dumps(summary))
-        return {"workflow_id": workflow_id, "sites": result["sites"]}
+            log.info("%s", json.dumps(summary, sort_keys=True))
+        if result.get("dead_lettered"):
+            log.warning(
+                "%d site(s) dead-lettered; see error_logs (error_type SITE_DEAD_LETTERED)",
+                result["dead_lettered"],
+            )
+        return {
+            "workflow_id": workflow_id,
+            "sites": result["sites"],
+            "dead_lettered": result.get("dead_lettered", 0),
+        }
 
     @task(execution_timeout=timedelta(minutes=5))
     def commit_offsets(polled: list[dict]) -> None:

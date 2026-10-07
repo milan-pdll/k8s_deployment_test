@@ -11,7 +11,7 @@ JSON line per job; exits non-zero if any job failed.
 | `stats` | rebuild `domain_stats` and `geo_content_stats` | every 15 min |
 | `scores` | rebuild `page_scores` and domain authority | hourly |
 | `reference` | link domains to local bodies, fill missing municipality contacts | daily |
-| `release-stale` | return ETL and indexing claims stuck longer than `--stale-minutes` | every 10 min |
+| `release-stale` | free claims stuck longer than `--stale-minutes` | every 10 min |
 | `purge` | drop error logs older than `--error-days`, searches older than `--search-days` | daily |
 | `all` | every job above, in that order | -- |
 """
@@ -29,7 +29,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .ingest import S3Source, ingest
-
 from .repositories import (
     OpsRepository,
     RankingRepository,
@@ -125,7 +124,9 @@ def run_job(session: Session, name: str, args: argparse.Namespace) -> dict[str, 
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="python -m pgs_db.jobs", description=__doc__.split("\n")[0])
+    parser = argparse.ArgumentParser(
+        prog="python -m pgs_db.jobs", description=__doc__.split("\n")[0]
+    )
     parser.add_argument("job", choices=[*JOBS, "all"])
     parser.add_argument("--stale-minutes", type=int, default=30)
     parser.add_argument("--error-days", type=int, default=90)

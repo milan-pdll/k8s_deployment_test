@@ -391,14 +391,18 @@ func TestS3Server_HandleGetCrawlRun_FinishedAtSetOnlyForTerminalStatus(t *testin
 
 	rec1 := doGet(t, s.Routes(), "/api/v1/crawl-runs/1")
 	var run1 crawlRunResponse
-	json.Unmarshal(rec1.Body.Bytes(), &run1)
+	if err := json.Unmarshal(rec1.Body.Bytes(), &run1); err != nil {
+		t.Fatalf("decode run1: %v", err)
+	}
 	if run1.FinishedAt != nil {
 		t.Errorf("run1 (status=running) FinishedAt = %v, want nil", run1.FinishedAt)
 	}
 
 	rec2 := doGet(t, s.Routes(), "/api/v1/crawl-runs/2")
 	var run2 crawlRunResponse
-	json.Unmarshal(rec2.Body.Bytes(), &run2)
+	if err := json.Unmarshal(rec2.Body.Bytes(), &run2); err != nil {
+		t.Fatalf("decode run2: %v", err)
+	}
 	if run2.FinishedAt == nil {
 		t.Error("run2 (status=completed) FinishedAt = nil, want non-nil")
 	}

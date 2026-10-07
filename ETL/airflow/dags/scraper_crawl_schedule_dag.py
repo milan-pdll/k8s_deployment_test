@@ -13,7 +13,9 @@ running is skipped instead of starting a second, overlapping crawl.
 
 from __future__ import annotations
 
+import logging
 import os
+from contextlib import closing
 from datetime import datetime, timedelta
 
 from airflow.decorators import dag, task
@@ -24,6 +26,8 @@ SCRAPER_TASK_QUEUE = "scraper-task-queue"  # scraper/internal/workflows TaskQueu
 CRAWL_WORKFLOW_ID = "scheduled-crawl-domains"
 # domains.priority -> crawl priority (higher is crawled first)
 PRIORITY = {"HIGH": 10, "NORMAL": 5, "LOW": 1}
+
+log = logging.getLogger("airflow.task")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -36,7 +40,9 @@ def _load_seeds() -> list[dict]:
 
     # pgs_etl's URL (postgresql+psycopg://...) in the libpq form psycopg2 takes.
     url = os.environ["DATABASE_URL"].replace("postgresql+psycopg://", "postgresql://", 1)
-    with psycopg2.connect(url) as conn, conn.cursor() as cur:
+    # psycopg2's connection context manager only ends the transaction; closing() also
+    # closes the connection.
+    with closing(psycopg2.connect(url)) as conn, conn, conn.cursor() as cur:
         cur.execute(
             "SELECT domain, category, priority FROM domains "
             "WHERE status <> 'PAUSED' ORDER BY domain"
@@ -62,7 +68,7 @@ def _load_seeds() -> list[dict]:
     tags=["scraper", "temporal"],
 )
 def scraper_crawl_schedule():
-    @task
+    @task(execution_timeout=timedelta(minutes=5))
     def start_crawl() -> str:
         import asyncio
 
@@ -106,7 +112,7 @@ def scraper_crawl_schedule():
             return handle.result_run_id or ""
 
         run_id = asyncio.run(start())
-        print(f"started {CRAWL_WORKFLOW_ID} (run {run_id}) for {len(seeds)} website(s)")
+        log.info("started %s (run %s) for %d website(s)", CRAWL_WORKFLOW_ID, run_id, len(seeds))
         return run_id
 
     start_crawl()

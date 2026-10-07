@@ -36,12 +36,15 @@ func TestKafkaSiteEventEmitterPublishesOneEventPerSite(t *testing.T) {
 		t.Fatalf("decode event: %v", err)
 	}
 	want := SiteCrawledEvent{
-		EventType: SiteCrawledEventType, CrawlRunID: 7, WorkflowID: "wf-1", TargetDomain: "ward.gov.np",
+		EventType: SiteCrawledEventType, SchemaVersion: SiteCrawledSchemaVersion, CrawlRunID: 7, WorkflowID: "wf-1", TargetDomain: "ward.gov.np",
 		Status: "completed", PagesFetched: 12, Bucket: "crawled-pages", KeyPrefix: "dev",
 		DocumentsPrefix: "dev/7/ward.gov.np/", CompletedAt: done,
 	}
 	if ev != want {
 		t.Fatalf("event = %+v\nwant    %+v", ev, want)
+	}
+	if !strings.Contains(string(writer.messages[0].Value), `"schema_version":1`) {
+		t.Fatalf("event JSON lacks schema_version: %s", writer.messages[0].Value)
 	}
 }
 

@@ -143,19 +143,22 @@ class TestEmbeddingModels:
         )
         # A Go or Spark writer bypassing pgs_db: 384 numbers under LaBSE's name. LaBSE's
         # HNSW index casts to vector(768) and rejects it; the foreign key backs that up.
-        with pytest.raises((DataError, IntegrityError), match="768|fk_page_embeddings"):
-            with session.begin_nested():
-                session.execute(
-                    insert,
-                    {"p": page_id, "m": DEFAULT_EMBEDDING_MODEL, "v": str(unit(0, 384)),
-                     "h": "b" * 64},
-                )
+        with (
+            pytest.raises((DataError, IntegrityError), match=r"768|fk_page_embeddings"),
+            session.begin_nested(),
+        ):
+            session.execute(
+                insert,
+                {"p": page_id, "m": DEFAULT_EMBEDDING_MODEL, "v": str(unit(0, 384)), "h": "b" * 64},
+            )
         # A model nobody registered is refused by the foreign key.
-        with pytest.raises(IntegrityError, match="fk_page_embeddings_model_name_embedding_models"):
-            with session.begin_nested():
-                session.execute(
-                    insert, {"p": page_id, "m": "rogue-model", "v": str(unit(0, 8)), "h": "b" * 64}
-                )
+        with (
+            pytest.raises(IntegrityError, match="fk_page_embeddings_model_name_embedding_models"),
+            session.begin_nested(),
+        ):
+            session.execute(
+                insert, {"p": page_id, "m": "rogue-model", "v": str(unit(0, 8)), "h": "b" * 64}
+            )
 
     def test_nearest_chunks_uses_the_models_hnsw_index(self, session: Session) -> None:
         bronze, silver = BronzeRepository(session), SilverRepository(session)
@@ -390,7 +393,8 @@ class TestSearchFit:
             {"searchable_text": "x", "content_hash": f"{n:064x}", **payload},
             crawled_document_id=crawl(bronze, n),
         ).id
-        silver.replace_embeddings(page_id, DEFAULT_EMBEDDING_MODEL, [{"text": "t", "vector": unit(9)}])
+        chunks = [{"text": "t", "vector": unit(9)}]
+        silver.replace_embeddings(page_id, DEFAULT_EMBEDDING_MODEL, chunks)
         return page_id
 
     def test_proto_request_values_work_as_sent(self, session: Session) -> None:

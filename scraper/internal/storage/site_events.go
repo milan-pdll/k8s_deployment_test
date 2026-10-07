@@ -13,6 +13,12 @@ import (
 // SiteCrawledEventType is the event_type of every SiteCrawledEvent.
 const SiteCrawledEventType = "site_crawl_completed"
 
+// SiteCrawledSchemaVersion is the version of the SiteCrawledEvent JSON. Bump it
+// only for a change consumers must know about (a removed or retyped field);
+// consumers treat a missing schema_version as 1 and skip versions they don't
+// know (ETL/spark/site_event.py).
+const SiteCrawledSchemaVersion = 1
+
 // SiteCrawledEvent is the scraper -> ETL hand-off: one message per website
 // (host) whose crawl has finished, published to Kafka after every page of
 // that site is already in the bucket. The ETL (the etl_ingestion_pipeline
@@ -20,10 +26,11 @@ const SiteCrawledEventType = "site_crawl_completed"
 // each Document JSON there names its raw HTML (html_key, relative to
 // KeyPrefix). There is no per-page or per-file message.
 type SiteCrawledEvent struct {
-	EventType    string `json:"event_type"`
-	CrawlRunID   int64  `json:"crawl_run_id"`
-	WorkflowID   string `json:"workflow_id"`
-	TargetDomain string `json:"target_domain"`
+	EventType     string `json:"event_type"`
+	SchemaVersion int    `json:"schema_version"`
+	CrawlRunID    int64  `json:"crawl_run_id"`
+	WorkflowID    string `json:"workflow_id"`
+	TargetDomain  string `json:"target_domain"`
 	// Status is "completed", or "failed" when the crawl ended with an error;
 	// the pages it did store are still under DocumentsPrefix.
 	Status string `json:"status"`
@@ -80,10 +87,13 @@ func NewKafkaSiteEventEmitter(brokers []string, topic, bucket, keyPrefix string)
 	}
 	return &KafkaSiteEventEmitter{
 		w: &kafka.Writer{
-			Addr:         kafka.TCP(brokers...),
-			Topic:        topic,
-			Balancer:     &kafka.Hash{},
-			RequiredAcks: kafka.RequireOne,
+			Addr:     kafka.TCP(brokers...),
+			Topic:    topic,
+			Balancer: &kafka.Hash{},
+			// Acknowledged by every in-sync replica before the activity counts
+			// the site as handed off: an event lost to a broker failover would
+			// leave a crawled site unprocessed with nothing to retry it.
+			RequiredAcks: kafka.RequireAll,
 			BatchTimeout: 10 * time.Millisecond,
 			// The broker creates the topic on the first event (no topic-init step).
 			AllowAutoTopicCreation: true,
@@ -105,6 +115,7 @@ func (e *KafkaSiteEventEmitter) EmitSiteCrawled(ctx context.Context, runID int64
 	}
 	data, err := json.Marshal(SiteCrawledEvent{
 		EventType:       SiteCrawledEventType,
+		SchemaVersion:   SiteCrawledSchemaVersion,
 		CrawlRunID:      runID,
 		WorkflowID:      workflowID,
 		TargetDomain:    host,

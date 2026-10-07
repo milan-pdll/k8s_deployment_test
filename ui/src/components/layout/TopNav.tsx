@@ -23,7 +23,7 @@ export async function TopNav() {
         ) : null}
         {user ? (
           <span className="rounded-full bg-slate-800 px-3 py-1.5 text-xs font-medium text-white dark:bg-slate-100 dark:text-slate-900">
-            {user.name}
+            {user.username}
           </span>
         ) : (
           <Link

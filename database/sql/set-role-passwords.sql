@@ -15,8 +15,11 @@
 \getenv etl_password PGS_ETL_DB_PASSWORD
 \getenv search_password PGS_SEARCH_DB_PASSWORD
 \getenv scraper_password PGS_SCRAPER_DB_PASSWORD
+\getenv jobs_password PGS_JOBS_DB_PASSWORD
 
 ALTER ROLE pgs_api PASSWORD :'api_password';
 ALTER ROLE pgs_etl PASSWORD :'etl_password';
 ALTER ROLE pgs_search PASSWORD :'search_password';
 ALTER ROLE pgs_scraper PASSWORD :'scraper_password';
+-- python -m pgs_db.jobs (Gold summaries, stale claims, retention), run by Airflow.
+ALTER ROLE pgs_jobs PASSWORD :'jobs_password';

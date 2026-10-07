@@ -1,371 +1,205 @@
+"""Text processing for one crawled page: HTML -> normalized text, language, hashes.
+
+Runs inside the Spark executors (shipped with SparkContext.addPyFile), once per page.
+Standard library only and deterministic: the same bytes always give the same record,
+so re-running a site produces identical hashes and Silver can recognise unchanged
+pages. Embeddings are computed afterwards, on the driver (embeddings.py).
+"""
+
 from __future__ import annotations
 
 import hashlib
-import io
-import json
-import os
 import re
-from dataclasses import dataclass
+import unicodedata
 from html.parser import HTMLParser
-from pathlib import Path
-from typing import Iterable
+from typing import Any
 
-WORD_RE = re.compile(r"[\w\u0900-\u097F]+", re.UNICODE) # create tokens like ["Hello", "नेपाल", "123"]
-SPACE_RE = re.compile(r"\s+") # remove space
+WORD_RE = re.compile(r"[\wऀ-ॿ]+", re.UNICODE)
+SPACE_RE = re.compile(r"\s+")
+# C0/C1 control characters other than whitespace; ZWJ/ZWNJ stay (Devanagari conjuncts).
+CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
-@dataclass(frozen=True)
-class GeoRule:
-    province: str
-    district: str
-    municipality: str
-    aliases: tuple[str, ...]
-
-SAMPLE_GEO_RULES = (
-    GeoRule(
-        province="Bagmati Province",
-        district="Kathmandu",
-        municipality="Kathmandu Metropolitan City",
-        aliases=("kathmandu", "kathmandu metropolitan", "kathmandu metropolitan city"),
-    ),
-    GeoRule(
-        province="Gandaki Province",
-        district="Kaski",
-        municipality="Pokhara Metropolitan City",
-        aliases=("pokhara", "pokhara metropolitan", "pokhara metropolitan city"),
-    ),
-    GeoRule(
-        province="Madhesh Province",
-        district="Dhanusha",
-        municipality="Janakpur Sub-Metropolitan City",
-        aliases=("janakpur", "janakpurdham", "janakpur sub-metropolitan"),
-    ),
+# Never page text.
+_SKIP_TAGS = frozenset({"script", "style", "noscript", "template", "svg", "title"})
+# Site chrome repeated on every page: menus, banners, footers. Dropping it keeps one
+# site's pages from looking alike to the near-duplicate check and keeps menus out of
+# the index, unless that leaves too little text (see extract_html_text).
+_BOILERPLATE_TAGS = frozenset({"nav", "header", "footer", "aside"})
+# Elements that end a run of text, so words of adjacent blocks are not glued together
+# ("<li>Kathmandu</li><li>Pokhara</li>" must not become "KathmanduPokhara").
+_BLOCK_TAGS = frozenset(
+    {
+        "address",
+        "article",
+        "blockquote",
+        "br",
+        "caption",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "figcaption",
+        "form",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "li",
+        "main",
+        "ol",
+        "option",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "td",
+        "th",
+        "tr",
+        "ul",
+    }
 )
+# Below this many words without the site chrome, the chrome is kept: on very short
+# pages it may be all the content there is.
+MIN_MAIN_CONTENT_WORDS = 40
+
+# Share of letters one script needs before a text counts as that language.
+_DOMINANT_SCRIPT_SHARE = 0.8
+
 
 class _HTMLTextExtractor(HTMLParser):
     def __init__(self) -> None:
-        super().__init__()
-        self._parts: list[str] = []
-        self._skip_depth = 0 # tracks whether the parser is currently inside tags that should be ignored, like <script> or <style>.
+        super().__init__(convert_charrefs=True)
+        self.all_parts: list[str] = []
+        self.main_parts: list[str] = []
+        self._skip_depth = 0
+        self._boilerplate_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() in {"script", "style", "noscript"}:
+        tag = tag.lower()
+        if tag in _SKIP_TAGS:
             self._skip_depth += 1
+        elif tag in _BOILERPLATE_TAGS:
+            self._boilerplate_depth += 1
+        if tag in _BLOCK_TAGS:
+            self._separate()
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in _BLOCK_TAGS:
+            self._separate()
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() in {"script", "style", "noscript"} and self._skip_depth:
+        tag = tag.lower()
+        if tag in _SKIP_TAGS and self._skip_depth:
             self._skip_depth -= 1
+        elif tag in _BOILERPLATE_TAGS and self._boilerplate_depth:
+            self._boilerplate_depth -= 1
+        if tag in _BLOCK_TAGS:
+            self._separate()
 
     def handle_data(self, data: str) -> None:
-        if not self._skip_depth and data.strip():
-            self._parts.append(data.strip())
+        if self._skip_depth or not data.strip():
+            return
+        self.all_parts.append(data)
+        if not self._boilerplate_depth:
+            self.main_parts.append(data)
 
-    def text(self) -> str:
-        return normalize_text(" ".join(self._parts))
+    def _separate(self) -> None:
+        self.all_parts.append("\n")
+        self.main_parts.append("\n")
+
 
 def normalize_text(text: str) -> str:
-    return SPACE_RE.sub(" ", text or "").strip() # replace spaces with text or if text null then ""
+    """NFC-normalize, drop control characters and collapse whitespace.
+
+    NFC matters for Devanagari: the same word typed with a precomposed or a decomposed
+    nukta must hash, tokenize and match identically.
+    """
+    text = unicodedata.normalize("NFC", text or "")
+    text = CONTROL_RE.sub(" ", text)
+    return SPACE_RE.sub(" ", text).strip()
+
 
 def extract_html_text(raw_html: str) -> str:
+    """Visible text of an HTML page, without scripts/styles and, when the page has
+    enough content of its own, without the navigation/header/footer chrome."""
     parser = _HTMLTextExtractor()
     parser.feed(raw_html)
-    return parser.text()
+    parser.close()
+    main = normalize_text("".join(parser.main_parts))
+    if len(tokenize(main)) >= MIN_MAIN_CONTENT_WORDS:
+        return main
+    return normalize_text("".join(parser.all_parts))
 
-def extract_pdf_text(raw_bytes: bytes) -> str:
-    """Extract text from a PDF using pypdf when available."""
-    try:
-        from pypdf import PdfReader
-    except ImportError as exc:
-        raise RuntimeError("PDF parsing requires pypdf; install ETL/spark requirements") from exc
-
-    reader = PdfReader(io.BytesIO(raw_bytes))
-    return normalize_text(" ".join(page.extract_text() or "" for page in reader.pages))
-
-def extract_text_from_file(path: str | Path, content_type: str | None = None) -> str:
-    file_path = Path(path)
-    suffix = file_path.suffix.lower()
-    kind = (content_type or "").lower()
-
-    if suffix == ".pdf" or "pdf" in kind:
-        return extract_pdf_text(file_path.read_bytes())
-
-    raw_text = file_path.read_text(encoding="utf-8", errors="ignore")
-    if suffix in {".html", ".htm"} or "html" in kind:
-        return extract_html_text(raw_text)
-    return normalize_text(raw_text)
 
 def detect_language(text: str) -> str:
-    devanagari = sum(1 for char in text if "\u0900" <= char <= "\u097F")
-    latin = sum(1 for char in text if ("A" <= char <= "Z") or ("a" <= char <= "z"))
-    if devanagari and latin:
-        return "mixed"
-    if devanagari:
+    """ne | en | mixed | unknown, from the share of Devanagari vs Latin letters.
+
+    One English word (a URL, an acronym) in a Nepali page does not make it mixed:
+    a script needs at least 80% of the letters to decide the language on its own.
+    """
+    devanagari = sum(1 for char in text if "ऀ" <= char <= "ॿ" and char.isalpha())
+    latin = sum(1 for char in text if char.isascii() and char.isalpha())
+    letters = devanagari + latin
+    if not letters:
+        return "unknown"
+    if devanagari / letters >= _DOMINANT_SCRIPT_SHARE:
         return "ne"
-    if latin:
+    if latin / letters >= _DOMINANT_SCRIPT_SHARE:
         return "en"
-    return "unknown"
+    return "mixed"
+
 
 def tokenize(text: str) -> list[str]:
     return [match.group(0).lower() for match in WORD_RE.finditer(text)]
 
+
 def sha256_text(text: str) -> str:
     return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()
 
+
 def simhash_text(text: str, bits: int = 64) -> int:
+    """64-bit SimHash of the text's tokens (unsigned). Near-duplicate pages differ in
+    only a few bits; Silver compares fingerprints when it saves a page."""
     tokens = tokenize(text)
     if not tokens:
         return 0
-
     weights = [0] * bits
     for token in tokens:
-        digest = int(hashlib.sha256(token.encode("utf-8")).hexdigest(), 16)
+        # The low 64 bits of the token's SHA-256 (as int(hexdigest, 16) & (2**64 - 1)).
+        digest = int.from_bytes(hashlib.sha256(token.encode("utf-8")).digest()[-8:], "big")
         for index in range(bits):
             weights[index] += 1 if digest & (1 << index) else -1
-
     fingerprint = 0
     for index, weight in enumerate(weights):
         if weight > 0:
             fingerprint |= 1 << index
     return fingerprint
 
-def hamming_distance(left: int, right: int) -> int:
-    return (left ^ right).bit_count() # if diff bits then 1 and counts all those 1s
 
-def resolve_geo(text: str, domain: str = "") -> dict[str, str] | None:
-    haystack = f"{domain} {text}".lower()
-    for rule in SAMPLE_GEO_RULES:
-        if any(alias in haystack for alias in rule.aliases):
-            return {
-                "province": rule.province,
-                "district": rule.district,
-                "municipality": rule.municipality,
-                "source": "seed_gazetteer",
-            }
-    return None
-
-
-EMBEDDING_MODEL_NAME = os.environ.get(
-    "EMBEDDING_MODEL_NAME", "sentence-transformers/LaBSE"
-)
-_embedding_model = None
-
-
-def _get_embedding_model():
-    """Load and cache the configured sentence-transformers model."""
-    global _embedding_model
-    if _embedding_model is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:
-            raise RuntimeError(
-                "Embeddings require sentence-transformers; install ETL dependencies"
-            ) from exc
-        _embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-    return _embedding_model
-
-
-def generate_embeddings(
-    texts: list[str], batch_size: int = 32
-) -> list[list[float] | None]:
-    """Generate normalized LaBSE vectors, chunking long inputs to avoid truncation."""
-    if batch_size < 1:
-        raise ValueError("batch_size must be at least 1")
-
-    results: list[list[float] | None] = [None for _ in texts]
-    if not any(text and text.strip() for text in texts):
-        return results
-
-    model = _get_embedding_model()
-    tokenizer = model.tokenizer
-    chunk_size = model.max_seq_length - tokenizer.num_special_tokens_to_add(pair=False)
-    if chunk_size < 1:
-        raise ValueError("Model max_seq_length must allow at least one text token")
-
-    chunks: list[str] = []
-    owners: list[int] = []
-    for index, text in enumerate(texts):
-        if not text or not text.strip():
-            continue
-        token_ids = tokenizer(text, add_special_tokens=False, truncation=False)["input_ids"]
-        for start in range(0, len(token_ids), chunk_size):
-            chunk = tokenizer.decode(
-                token_ids[start : start + chunk_size], skip_special_tokens=True
-            )
-            if chunk.strip():
-                chunks.append(chunk)
-                owners.append(index)
-
-    if not chunks:
-        return results
-
-    vectors = model.encode(
-        chunks,
-        batch_size=batch_size,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=False,
-    )
-    grouped: list[list] = [[] for _ in texts]
-    for index, vector in zip(owners, vectors):
-        grouped[index].append(vector)
-
-    for index, document_vectors in enumerate(grouped):
-        if document_vectors:
-            mean_vector = sum(document_vectors) / len(document_vectors)
-            norm = float((mean_vector**2).sum() ** 0.5)
-            if norm:
-                results[index] = [float(value) for value in mean_vector / norm]
-    return results
-
-
-def generate_embedding(text: str) -> list[float] | None:
-    """Generate one normalized LaBSE vector, or None for blank text."""
-    return generate_embeddings([text])[0]
-
-def transform_document( # * means, after it, all should be named
+def transform_document(
     *,
     source_url: str,
     text: str,
     title: str = "",
+    description: str = "",
     target_domain: str = "",
     object_key: str = "",
-    with_embedding: bool = False,
-) -> dict:
+) -> dict[str, Any]:
+    """One page's record, in the shape pgs_db.etl.payload_from_transform reads."""
     normalized = normalize_text(text)
-    exact_hash = sha256_text(normalized)
-    simhash = simhash_text(normalized)
-    tokens = tokenize(normalized)
-    embedding = generate_embedding(normalized) if with_embedding else None
-
     return {
-        "document_id": f"doc_{exact_hash[:12]}",
         "source_url": source_url,
         "object_key": object_key,
         "target_domain": target_domain,
-        "title": title,
+        "title": normalize_text(title),
+        "description": normalize_text(description) or None,
         "language_detected": detect_language(normalized),
         "searchable_text": normalized,
-        "word_count": len(tokens),
+        "word_count": len(tokenize(normalized)),
         "char_count": len(normalized),
-        "content_sha256": exact_hash,
-        "simhash": f"{simhash:016x}",
-        "geo_location": resolve_geo(normalized, target_domain),
-        "duplicate": False,
-        "duplicate_type": None,
-        "duplicate_of": None,
-        "embedding": embedding,
-        "embedding_model": EMBEDDING_MODEL_NAME if embedding else None,
-        "embedding_dim": len(embedding) if embedding else 0,
+        "content_sha256": sha256_text(normalized),
+        "simhash": f"{simhash_text(normalized):016x}",
     }
-
-
-def add_embeddings(
-    documents: list[dict], batch_size: int = 32
-) -> list[dict]:
-    """Add LaBSE vectors to transformed documents in batches."""
-    vectors = generate_embeddings(
-        [document["searchable_text"] for document in documents], batch_size
-    )
-    for document, vector in zip(documents, vectors):
-        document["embedding"] = vector
-        document["embedding_model"] = EMBEDDING_MODEL_NAME if vector else None
-        document["embedding_dim"] = len(vector) if vector else 0
-    return documents
-
-
-def transform_file(
-    signal: dict, dfs_root: str | Path, *, with_embedding: bool = True
-) -> dict:
-    object_key = signal["object_key"]
-    file_path = Path(dfs_root) / object_key
-    from security_scanner import inspect_file
-
-    security_scan = inspect_file(file_path)
-    if not security_scan["accepted"]:
-        raise ValueError(f"File failed intake security checks: {security_scan['findings']}")
-
-    text = extract_text_from_file(file_path, signal.get("content_type"))
-    transformed = transform_document(
-        source_url=signal.get("source_url") or signal.get("page_url") or "",
-        text=text,
-        title=signal.get("title", ""),
-        target_domain=signal.get("target_domain", ""),
-        object_key=object_key,
-        with_embedding=with_embedding,
-    )
-    transformed["security_scan"] = security_scan
-    return transformed
-
-def mark_duplicates(documents: Iterable[dict], fuzzy_distance: int = 3) -> list[dict]:
-    """Mark exact SHA256 duplicates and near-duplicates by SimHash distance."""
-    seen_hashes: dict[str, str] = {}
-    seen_simhashes: list[tuple[int, str]] = []
-    output: list[dict] = []
-
-    for document in documents:
-        current = dict(document)
-        exact_hash = current["content_sha256"]
-        simhash = int(current["simhash"], 16)
-
-        if exact_hash in seen_hashes:
-            current["duplicate"] = True
-            current["duplicate_type"] = "exact_sha256"
-            current["duplicate_of"] = seen_hashes[exact_hash]
-        else:
-            for previous_simhash, previous_id in seen_simhashes:
-                if hamming_distance(simhash, previous_simhash) <= fuzzy_distance:
-                    current["duplicate"] = True
-                    current["duplicate_type"] = "simhash"
-                    current["duplicate_of"] = previous_id
-                    break
-
-        if not current["duplicate"]:
-            seen_hashes[exact_hash] = current["document_id"]
-            seen_simhashes.append((simhash, current["document_id"]))
-        output.append(current)
-
-    return output
-
-def append_jsonl(path: str | Path, records: Iterable[dict]) -> None:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("a", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-
-def analyze_text(spark, text: str):
-    """Spark DataFrame wrapper used by the Docker Spark smoke test."""
-    from pyspark.sql.types import (
-        BooleanType,
-        IntegerType,
-        MapType,
-        StringType,
-        StructField,
-        StructType,
-        ArrayType,
-        FloatType,
-    )
-
-    transformed = transform_document(source_url="", text=text)
-    schema = StructType(
-        [
-            StructField("document_id", StringType(), nullable=False),
-            StructField("source_url", StringType(), nullable=False),
-            StructField("object_key", StringType(), nullable=False),
-            StructField("target_domain", StringType(), nullable=False),
-            StructField("title", StringType(), nullable=False),
-            StructField("language_detected", StringType(), nullable=False),
-            StructField("searchable_text", StringType(), nullable=False),
-            StructField("word_count", IntegerType(), nullable=False),
-            StructField("char_count", IntegerType(), nullable=False),
-            StructField("content_sha256", StringType(), nullable=False),
-            StructField("simhash", StringType(), nullable=False),
-            StructField("geo_location", MapType(StringType(), StringType()), nullable=True),
-            StructField("duplicate", BooleanType(), nullable=False),
-            StructField("duplicate_type", StringType(), nullable=True),
-            StructField("duplicate_of", StringType(), nullable=True),
-            StructField("embedding", ArrayType(FloatType()), nullable=True),
-            StructField("embedding_model", StringType(), nullable=True),
-            StructField("embedding_dim", IntegerType(), nullable=False),
-        ]
-    )
-    return spark.createDataFrame([transformed], schema=schema)

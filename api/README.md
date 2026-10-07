@@ -1,3 +1,83 @@
+# API gateway (FastAPI)
+
+The public HTTP API of the PGS Search Engine (`pgs_api.main:app`, served by Uvicorn on :8000;
+behind nginx at `/api/v1/` and `/health/`). It reads PostgreSQL as the `pgs_api` role
+through the shared `pgs_db` package and calls the search engine over gRPC
+(`search-engine/proto/search.proto`). Interactive docs: `http://localhost:8000/docs`.
+How it fits in the system: [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
+
+## Endpoints (implemented)
+
+| Method | Path | Auth | Answer |
+| --- | --- | --- | --- |
+| GET | `/health/live` | -- | `{"status": "ok"}` while the process runs |
+| GET | `/health/ready` | -- | 200/503 with checks: database (schema revision, reference data, Gold freshness) and search (gRPC health; "degraded" when the search engine is down -- not a readiness failure) |
+| GET | `/api/v1/search?q=&page=1&limit=10&province_code=&district_code=&municipality_id=&ward_number=&language=auto&content_type=all` | -- | `{query, page, limit, total_hits, took_ms, query_language, degraded, results: [{id, title, url, domain, snippet, result_type, language, published_at, relevance_score, geo}]}`; 400 invalid parameters (`q` 1..512 characters, `limit` 1..100, `page * limit <= 500`), 503 search engine unavailable, 504 timeout, 502 search failed. The query is logged to `search_queries` best-effort. |
+| GET | `/api/v1/geo/hierarchy` | -- | provinces -> districts -> local bodies (codes and names) |
+| GET | `/api/v1/geo/content-stats?level=province\|district\|local_body&within=` | -- | indexed-content counts per region (map colouring) from the Gold summaries |
+| POST | `/api/v1/auth/login` `{username \| email, password}` | -- | `{access_token, token_type: "bearer", expires_in, user}`; 401 bad credentials; 503 when `API_AUTH_SECRET` is not set |
+| GET | `/api/v1/auth/me` | Bearer | the signed-in admin |
+| GET | `/api/v1/admin/summary` | Bearer | dashboard numbers: domains, storage/queue, quarantine, errors in the last 24 h, search traffic |
+
+Tokens are HMAC-SHA256 signed with `API_AUTH_SECRET` (>= 32 characters) and carry the
+admin's id, role and expiry (`API_TOKEN_TTL_SECONDS`, default 8 h); verification is
+constant-time and checks that the account is still active. Admin accounts live in
+`admin_users` (argon2 hashes): `docker compose run --rm db-migrate python
+scripts/create_admin.py <username> --email <address>`.
+
+## Configuration (`src/pgs_api/core/settings.py`)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | required | `postgresql+psycopg://pgs_api:...@postgres:5432/pgs` |
+| `SEARCH_GRPC_HOST` / `SEARCH_GRPC_PORT` | `localhost` / `50051` | the search engine |
+| `SEARCH_TIMEOUT_SECONDS` | `5` (compose: 8) | gRPC deadline per search |
+| `API_AUTH_SECRET` | unset | enables login/admin; unset -> those answer 503 |
+| `API_TOKEN_TTL_SECONDS` | `28800` | token lifetime |
+| `API_CORS_ORIGINS` | empty (no CORS) | comma-separated browser origins allowed cross-origin |
+| `LOG_LEVEL` | `INFO` | JSON logs with a request id per request; query strings are not logged |
+
+The configuration is validated at startup; an invalid value stops the process with a
+message naming the variable (never its value).
+
+## Layout
+
+```text
+api/
+  src/pgs_api/
+    main.py            Uvicorn entry point (pgs_api.main:app): settings -> logging -> app
+    app.py             create_app: middleware, error handlers, routers
+    core/              settings (typed, from the environment), errors, observability
+                       (JSON logs, request ids), services (the dependency container)
+    auth/              tokens (HMAC-signed admin tokens), dependencies (CurrentAdmin)
+    db/                database (pgs_db repositories behind a small interface), search_log
+    grpc/              client of the search engine (deadlines, status-code mapping, health)
+    health/            readiness checks
+    routers/           one module per endpoint group: search, geo, auth, admin, health
+    schemas/           request/response models per area: search, geo, auth, admin, health
+  tests/               pytest with fake database and search backends
+  pyproject.toml       package metadata and the pytest configuration
+  requirements.txt     pinned runtime dependencies (the image installs these + pgs-db)
+  Dockerfile
+```
+
+## Development
+
+```bash
+.venv/bin/python -m pytest api/tests      # unit tests (fake gRPC stub and repositories)
+.venv/bin/ruff check api && .venv/bin/pyright
+PYTHONPATH=api/src:search-engine/src uvicorn pgs_api.main:app --reload   # with DATABASE_URL etc.
+```
+
+---
+
+# Original specification (target design, mostly NOT implemented)
+
+The rest of this file is the gateway's original design document. Only the endpoints in
+the table above exist; the admin endpoints below for domains, storage, logs, quarantine,
+cluster metrics, crawl control and file downloads are not implemented yet (the
+repository methods most of them need exist in `pgs_db`, see `database/README.md` §3).
+
 # API Gateway Specification & Service Contract
 
 ## FastAPI Gateway REST API & System Administration Manual

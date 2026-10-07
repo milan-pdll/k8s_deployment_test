@@ -1,5 +1,9 @@
 syntax = "proto3";
 
+// Internal API of the search engine. Only the FastAPI gateway (api/) calls it, over the
+// private network. Errors are reported as gRPC status codes (INVALID_ARGUMENT for a bad
+// request, UNAVAILABLE when OpenSearch is down, DEADLINE_EXCEEDED), never as a 200 with
+// an error inside. Field numbers are append-only: never renumber or reuse one.
 package search.engine.v1;
 
 service SearchService {
@@ -7,25 +11,50 @@ service SearchService {
 }
 
 message SearchRequest {
+  // Required: 1..512 characters after trimming.
   string query = 1;
+  // Geo filters ("" / 0 = no filter). municipality_id is the local body code.
   string province_code = 2;
   string district_code = 3;
   string municipality_id = 4;
   int32 ward_number = 5;
+  // "" or "all" = no filter.
   string content_type = 6;
+  // "" or "auto" = no filter; otherwise ne | en | mixed.
   string language = 7;
+  // 1-based; page * limit may not exceed the engine's candidate cap.
   int32 page = 8;
+  // 1..100; 0 means the default (10).
   int32 limit = 9;
 }
 
 message SearchResponse {
+  // Always 200 on success (kept for wire compatibility; failures use gRPC status codes).
   int32 status_code = 1;
+  // Ranked results available for paging, capped by the candidate limit.
   int32 total_hits = 2;
   int64 execution_time_ms = 3;
   repeated SearchResultItem results = 4;
+  // Language detected for the query: ne | en | mixed | unknown.
+  string query_language = 5;
+  // True when an optional stage (vector retrieval, translation, reranking) failed and
+  // the results were produced without it.
+  bool degraded = 6;
+}
+
+message GeoRef {
+  string province_code = 1;
+  string province_name = 2;
+  string district_code = 3;
+  string district_name = 4;
+  // Local body code.
+  string municipality_id = 5;
+  string municipality_name = 6;
+  int32 ward_number = 7;
 }
 
 message SearchResultItem {
+  // The page id in PostgreSQL (pages.id), also the OpenSearch _id.
   string id = 1;
   string result_type = 2;
   string title = 3;
@@ -35,4 +64,10 @@ message SearchResultItem {
   string download_url = 7;
   int64 file_size_bytes = 8;
   double relevance_score = 9;
+  // ne | en | mixed | unknown
+  string language = 10;
+  // RFC 3339, or "" when unknown.
+  string published_at = 11;
+  // The page's primary location; unset when the page has none.
+  GeoRef geo = 12;
 }

@@ -32,7 +32,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("out_dir", nargs="?", default="boundaries-export")
     parser.add_argument(
-        "--tolerance", type=float, default=None, help="simplification in degrees (default: per level)"
+        "--tolerance",
+        type=float,
+        default=None,
+        help="simplification in degrees (default: per level)",
     )
     args = parser.parse_args()
     out = Path(args.out_dir)
@@ -48,7 +51,8 @@ def main() -> None:
                 raise SystemExit("no boundaries in the database: run seed_boundaries.py first")
             path = out / filename
             path.write_text(json.dumps(collection, separators=(",", ":")), encoding="utf-8")
-            print(f"{path}: {len(collection['features'])} features, {path.stat().st_size // 1024} KB")
+            size_kb = path.stat().st_size // 1024
+            print(f"{path}: {len(collection['features'])} features, {size_kb} KB")
 
 
 if __name__ == "__main__":

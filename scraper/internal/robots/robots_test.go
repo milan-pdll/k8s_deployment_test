@@ -2,209 +2,162 @@ package robots
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"search-engine-scraper/internal/fetcher"
 )
 
-func TestParseLongestMatchWins(t *testing.T) {
-	body := `
-User-agent: *
-Disallow: /private
-Allow: /private/public
-Crawl-delay: 2
-`
-	rs := parse(body, "mybot")
-	if len(rs.disallow) != 1 || rs.disallow[0] != "/private" {
-		t.Fatalf("unexpected disallow rules: %v", rs.disallow)
-	}
-	if rs.crawlDelay.Seconds() != 2 {
-		t.Fatalf("expected crawl-delay 2s, got %v", rs.crawlDelay)
-	}
-}
-
-func TestParseSpecificAgentOverridesWildcard(t *testing.T) {
-	body := `
-User-agent: *
-Disallow: /
-
-User-agent: mybot
-Disallow: /admin
-`
-	rs := parse(body, "mybot")
-	if len(rs.disallow) != 1 || rs.disallow[0] != "/admin" {
-		t.Fatalf("expected mybot-specific rules, got %v", rs.disallow)
-	}
-}
-
-func TestParseGroupedUserAgents(t *testing.T) {
-	body := `
-User-agent: a
-User-agent: b
-Disallow: /x
-`
-	rs := parse(body, "b")
-	if len(rs.disallow) != 1 || rs.disallow[0] != "/x" {
-		t.Fatalf("expected grouped agents to share rules, got %v", rs.disallow)
-	}
-}
-
-func TestParseSitemapsApplyRegardlessOfUserAgentGroup(t *testing.T) {
-	body := `
-Sitemap: https://example.com/sitemap.xml
-
-User-agent: *
-Disallow: /private
-
-Sitemap: https://example.com/sitemap-news.xml
-
-User-agent: mybot
-Disallow: /admin
-`
-	want := []string{"https://example.com/sitemap.xml", "https://example.com/sitemap-news.xml"}
-
-	for _, agent := range []string{"mybot", "someotherbot"} {
-		rs := parse(body, agent)
-		if len(rs.sitemaps) != len(want) {
-			t.Fatalf("agent %q: sitemaps = %v, want %v", agent, rs.sitemaps, want)
-		}
-		for i := range want {
-			if rs.sitemaps[i] != want[i] {
-				t.Errorf("agent %q: sitemaps[%d] = %q, want %q", agent, i, rs.sitemaps[i], want[i])
-			}
-		}
-	}
-}
-
-func TestParseNoSitemapsYieldsNilSlice(t *testing.T) {
-	body := `
-User-agent: *
-Disallow: /private
-`
-	rs := parse(body, "mybot")
-	if len(rs.sitemaps) != 0 {
-		t.Errorf("sitemaps = %v, want none", rs.sitemaps)
-	}
-}
-
-func TestParseCrawlDelayFractionalSeconds(t *testing.T) {
-	body := `
-User-agent: *
-Crawl-delay: 0.5
-`
-	rs := parse(body, "mybot")
-	if rs.crawlDelay != 500*time.Millisecond {
-		t.Fatalf("crawlDelay = %v, want 500ms", rs.crawlDelay)
-	}
-}
-
-// TestParseCrawlDelayInvalidValueIsIgnored proves a Crawl-delay line that
-// doesn't parse as a number is dropped rather than left at some corrupted
-// value or fatally rejecting the whole robots.txt -- consistent with the
-// package's fetch-failure/parse-failure behavior elsewhere (see
-// Guard.rulesFor and DiscoverSitemapURLs), where a malformed
-// robots.txt degrades to "no extra rules" rather than blocking the crawl.
-func TestParseCrawlDelayInvalidValueIsIgnored(t *testing.T) {
-	body := `
-User-agent: *
-Crawl-delay: not-a-number
-Disallow: /private
-`
-	rs := parse(body, "mybot")
-	if rs.crawlDelay != 0 {
-		t.Fatalf("crawlDelay = %v, want 0 (invalid value should be ignored)", rs.crawlDelay)
-	}
-	if len(rs.disallow) != 1 || rs.disallow[0] != "/private" {
-		t.Fatalf("an invalid Crawl-delay line shouldn't affect other directives in the same group: disallow = %v", rs.disallow)
-	}
-}
-
-func TestParseCrawlDelayAbsentDefaultsToZero(t *testing.T) {
-	body := `
-User-agent: *
-Disallow: /private
-`
-	rs := parse(body, "mybot")
-	if rs.crawlDelay != 0 {
-		t.Fatalf("crawlDelay = %v, want 0 (no Crawl-delay directive present)", rs.crawlDelay)
-	}
-}
-
-func newGuardFor(t *testing.T, robotsBody string, status int) (*Guard, string) {
+func allowedPath(t *testing.T, body, agent, target string) bool {
 	t.Helper()
-	var hits int
+	return parse(body, agent).allowed(target)
+}
+
+func TestLongestMatchWinsAndAllowWinsTies(t *testing.T) {
+	body := "User-agent: *\nDisallow: /private\nAllow: /private/public\nDisallow: /tie\nAllow: /tie\n"
+	cases := map[string]bool{
+		"/private/secret":      false,
+		"/private/public/page": true,
+		"/open":                true,
+		"/tie":                 true,
+	}
+	for target, want := range cases {
+		if got := allowedPath(t, body, "mybot", target); got != want {
+			t.Errorf("%s: allowed = %v, want %v", target, got, want)
+		}
+	}
+}
+
+func TestWildcardsAndEndAnchor(t *testing.T) {
+	body := "User-agent: *\nDisallow: /*.pdf$\nDisallow: /search?*q=\n"
+	cases := map[string]bool{
+		"/docs/file.pdf":      false,
+		"/docs/file.pdf?x=1":  true, // "$" anchors the end
+		"/search?lang=en&q=x": false,
+		"/search":             true,
+	}
+	for target, want := range cases {
+		if got := allowedPath(t, body, "mybot", target); got != want {
+			t.Errorf("%s: allowed = %v, want %v", target, got, want)
+		}
+	}
+}
+
+func TestSpecificAgentGroupReplacesWildcard(t *testing.T) {
+	body := "User-agent: *\nDisallow: /\n\nUser-agent: MyBot\nDisallow: /admin\n"
+	if !allowedPath(t, body, productToken("mybot/1.0 (+https://x)"), "/page") {
+		t.Error("the mybot group (case-insensitive product token) should replace the * group")
+	}
+	if allowedPath(t, body, "mybot", "/admin/x") {
+		t.Error("/admin should stay disallowed for mybot")
+	}
+	if allowedPath(t, body, "otherbot", "/page") {
+		t.Error("other agents fall back to the * group")
+	}
+}
+
+func TestGroupedUserAgentsShareRules(t *testing.T) {
+	body := "User-agent: a\nUser-agent: b\nDisallow: /x\n"
+	if allowedPath(t, body, "b", "/x") {
+		t.Error("grouped agents should share rules")
+	}
+}
+
+func TestPercentEncodingIsNormalized(t *testing.T) {
+	body := "User-agent: *\nDisallow: /%e0%a4%b8\n"
+	if allowedPath(t, body, "mybot", "/%E0%A4%B8/page") {
+		t.Error("escapes should match regardless of hex case")
+	}
+}
+
+func TestSitemapsAndCrawlDelay(t *testing.T) {
+	body := "Sitemap: https://example.com/a.xml\nUser-agent: *\nCrawl-delay: 1.5\nDisallow: /p\nSitemap: https://example.com/b.xml\nCrawl-delay: nonsense\n"
+	rs := parse(body, "mybot")
+	if len(rs.sitemaps) != 2 {
+		t.Fatalf("sitemaps = %v, want both, regardless of groups", rs.sitemaps)
+	}
+	if rs.crawlDelay != 1500*time.Millisecond {
+		t.Errorf("crawl-delay = %v, want 1.5s (invalid values ignored)", rs.crawlDelay)
+	}
+	if rs := parse("User-agent: *\nDisallow: /p\n", "mybot"); rs.sitemaps != nil || rs.crawlDelay != 0 {
+		t.Errorf("no Sitemap/Crawl-delay lines: got %v / %v", rs.sitemaps, rs.crawlDelay)
+	}
+}
+
+func newGuardFor(t *testing.T, robotsBody string, status int) (*Guard, string, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/robots.txt" {
 			http.NotFound(w, r)
 			return
 		}
-		hits++
+		hits.Add(1)
 		w.WriteHeader(status)
-		w.Write([]byte(robotsBody))
+		_, _ = w.Write([]byte(robotsBody))
 	}))
 	t.Cleanup(srv.Close)
-	g := New(fetcher.New(5*time.Second, 0), "testbot")
-	t.Cleanup(func() {
-		if hits > 1 {
-			t.Errorf("robots.txt fetched %d times, want it cached after the first", hits)
+	// httptest listens on 127.0.0.1, which the fetcher refuses by default.
+	f := fetcher.New(5*time.Second, 0, fetcher.WithAllowPrivateNetworks(true))
+	return New(f, "testbot"), srv.URL, &hits
+}
+
+func TestGuardHonorsRulesAndCachesTheFile(t *testing.T) {
+	g, base, hits := newGuardFor(t, "User-agent: *\nDisallow: /private\nSitemap: https://example.com/sm.xml\n", http.StatusOK)
+	ctx := context.Background()
+	for target, want := range map[string]bool{"/private/x": false, "/open": true, "/robots.txt": true} {
+		got, err := g.Allowed(ctx, base+target)
+		if err != nil || got != want {
+			t.Errorf("%s: Allowed = %v, %v; want %v", target, got, err, want)
 		}
-	})
-	return g, srv.URL
-}
-
-func TestGuardAllowed_HonorsDisallowAndAllow(t *testing.T) {
-	g, base := newGuardFor(t, "User-agent: *\nDisallow: /private\nAllow: /private/public\n", http.StatusOK)
-	ctx := context.Background()
-
-	if g.Allowed(ctx, base+"/private/secret") {
-		t.Error("/private/secret should be disallowed")
 	}
-	if !g.Allowed(ctx, base+"/private/public/page") {
-		t.Error("/private/public/page should be allowed (longest match wins)")
+	sitemaps, err := g.Sitemaps(ctx, base+"/")
+	if err != nil || len(sitemaps) != 1 || sitemaps[0] != "https://example.com/sm.xml" {
+		t.Errorf("Sitemaps = %v, %v", sitemaps, err)
 	}
-	if !g.Allowed(ctx, base+"/open") {
-		t.Error("/open should be allowed")
+	if n := hits.Load(); n != 1 {
+		t.Errorf("robots.txt fetched %d times, want once (cached)", n)
 	}
 }
 
-func TestGuardAllowed_MissingRobotsTxtAllowsEverything(t *testing.T) {
-	g, base := newGuardFor(t, "", http.StatusNotFound)
-	if !g.Allowed(context.Background(), base+"/anything") {
-		t.Error("a 404 robots.txt should allow all URLs")
+func TestGuardMissingRobotsTxtAllowsEverything(t *testing.T) {
+	g, base, _ := newGuardFor(t, "", http.StatusNotFound)
+	if ok, err := g.Allowed(context.Background(), base+"/anything"); err != nil || !ok {
+		t.Errorf("a 404 robots.txt should allow all URLs, got %v, %v", ok, err)
+	}
+	if sm, err := g.Sitemaps(context.Background(), base+"/"); err != nil || sm != nil {
+		t.Errorf("Sitemaps = %v, %v; want nil", sm, err)
 	}
 }
 
-func TestGuardAllowed_UnparsableURLIsDisallowed(t *testing.T) {
+func TestGuardServerErrorDisallowsTheOriginForNow(t *testing.T) {
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests} {
+		g, base, _ := newGuardFor(t, "", status)
+		ok, err := g.Allowed(context.Background(), base+"/page")
+		if ok || !errors.Is(err, ErrUnreachable) {
+			t.Errorf("status %d: Allowed = %v, %v; want false, ErrUnreachable", status, ok, err)
+		}
+	}
+}
+
+func TestGuardRefusesPrivateOriginsByDefault(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(srv.Close)
 	g := New(fetcher.New(time.Second, 0), "testbot")
-	if g.Allowed(context.Background(), "http://[::1") {
-		t.Error("an unparsable URL should not be allowed")
+	ok, err := g.Allowed(context.Background(), srv.URL+"/page")
+	if ok || err == nil || !fetcher.IsPermanent(err) {
+		t.Errorf("Allowed on 127.0.0.1 = %v, %v; want a permanent refusal", ok, err)
 	}
 }
 
-func TestGuardCrawlDelayAndSitemaps(t *testing.T) {
-	g, base := newGuardFor(t, "User-agent: *\nCrawl-delay: 3\nSitemap: https://example.com/sm.xml\n", http.StatusOK)
-	ctx := context.Background()
-
-	if got := g.CrawlDelay(ctx, base+"/"); got != 3*time.Second {
-		t.Errorf("CrawlDelay = %v, want 3s", got)
-	}
-	sm := g.Sitemaps(ctx, base+"/")
-	if len(sm) != 1 || sm[0] != "https://example.com/sm.xml" {
-		t.Errorf("Sitemaps = %v, want [https://example.com/sm.xml]", sm)
-	}
-}
-
-func TestGuardCrawlDelayAndSitemaps_NoRobotsTxt(t *testing.T) {
-	g, base := newGuardFor(t, "", http.StatusNotFound)
-	ctx := context.Background()
-
-	if got := g.CrawlDelay(ctx, base+"/"); got != 0 {
-		t.Errorf("CrawlDelay = %v, want 0", got)
-	}
-	if sm := g.Sitemaps(ctx, base+"/"); sm != nil {
-		t.Errorf("Sitemaps = %v, want nil", sm)
+func TestGuardInvalidURL(t *testing.T) {
+	g := New(fetcher.New(time.Second, 0), "testbot")
+	ok, err := g.Allowed(context.Background(), "http://[::1")
+	if ok || !errors.Is(err, fetcher.ErrInvalidURL) {
+		t.Errorf("Allowed = %v, %v; want false, ErrInvalidURL", ok, err)
 	}
 }

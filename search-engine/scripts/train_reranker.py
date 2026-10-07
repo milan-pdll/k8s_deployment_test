@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-import joblib
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -18,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 SEARCH_ENGINE_ROOT = Path(__file__).resolve().parents[1]
 TRAINING_DATA_PATH = SEARCH_ENGINE_ROOT / "training_data" / "ranking_training_data.csv"
-MODEL_PATH = SEARCH_ENGINE_ROOT / "models" / "lightgbm_reranker.pkl"
+# LightGBM's native text format: the server loads it with lightgbm.Booster, no pickle.
+MODEL_PATH = SEARCH_ENGINE_ROOT / "models" / "lightgbm_reranker.txt"
 FEATURE_IMPORTANCE_PATH = SEARCH_ENGINE_ROOT / "training_data" / "feature_importance.csv"
 RERANKED_RESULTS_PATH = SEARCH_ENGINE_ROOT / "training_data" / "reranked_results.csv"
 
@@ -143,7 +143,7 @@ def train() -> lgb.LGBMRanker:
         RERANKED_RESULTS_PATH,
         index=False,
     )
-    joblib.dump(model, MODEL_PATH)
+    model.booster_.save_model(str(MODEL_PATH))
 
     logger.info("Model saved to %s", MODEL_PATH)
     logger.info("Feature importance saved to %s", FEATURE_IMPORTANCE_PATH)
