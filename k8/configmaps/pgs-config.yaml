@@ -21,3 +21,8 @@ data:
   EMBEDDING_MODEL_NAME: sentence-transformers/LaBSE
   EMBEDDING_MODEL_REVISION: 836121a0533e5664b21c7aacc5d22951f2b8b25b
   EMBEDDING_DIMENSIONS: "768"
+  # Query translation: "local" loads NLLB in the search-engine pod; "remote" calls an
+  # OpenAI-compatible chat API (key in pgs-secrets) and loads no model.
+  TRANSLATION_BACKEND: remote
+  TRANSLATION_API_BASE_URL: https://openrouter.ai/api/v1
+  TRANSLATION_API_MODEL: meta-llama/llama-3.3-70b-instruct:free
