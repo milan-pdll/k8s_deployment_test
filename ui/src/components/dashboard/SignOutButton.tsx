@@ -10,19 +10,26 @@ export function SignOutButton() {
 
   async function handleSignOut() {
     setLoading(true);
-    await fetch("/api/auth/logout", { method: "POST" });
-    router.push("/");
-    router.refresh();
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      // Leave the dashboard even if the request failed; the dashboard checks the
+      // session with the API on every visit anyway.
+      router.push("/");
+      router.refresh();
+    }
   }
 
   return (
     <button
+      type="button"
       onClick={handleSignOut}
       disabled={loading}
-      className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-60 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+      aria-label="Sign out"
+      className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-60 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
     >
-      <LogOut className="h-3.5 w-3.5" />
-      Sign out
+      <LogOut className="h-4 w-4" aria-hidden />
+      <span className="hidden sm:inline">{loading ? "Signing out…" : "Sign out"}</span>
     </button>
   );
 }
