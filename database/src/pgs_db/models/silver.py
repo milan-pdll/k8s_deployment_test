@@ -26,7 +26,6 @@ from sqlalchemy import (
     Computed,
     DateTime,
     Float,
-    func,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -35,6 +34,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
     text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
@@ -72,7 +72,8 @@ class Page(IdMixin, TimestampMixin, Base):
             "num_nonnulls(crawled_document_id, stored_file_id) = 1", name="one_source"
         ),
         CheckConstraint(
-            "language_confidence IS NULL OR (language_confidence >= 0 AND language_confidence <= 1)",
+            "language_confidence IS NULL"
+            " OR (language_confidence >= 0 AND language_confidence <= 1)",
             name="language_confidence_range",
         ),
         CheckConstraint("version >= 1", name="version_positive"),

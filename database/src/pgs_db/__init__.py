@@ -26,9 +26,9 @@ __all__ = [
     "SearchRepository",
     "SilverRepository",
     "StatsRepository",
-    "models",
     "get_database_url",
     "get_session",
     "make_engine",
     "make_session_factory",
+    "models",
 ]

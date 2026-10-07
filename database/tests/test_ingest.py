@@ -210,7 +210,7 @@ class _StubPaginator:
 class _StubS3:
     """Just enough of boto3's S3 client for S3Source's listing."""
 
-    class exceptions:  # noqa: N801 -- mirrors boto3's attribute
+    class exceptions:
         class NoSuchKey(Exception):
             pass
 

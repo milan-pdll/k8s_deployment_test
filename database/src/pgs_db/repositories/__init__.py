@@ -31,8 +31,8 @@ __all__ = [
     "crawl_stats_columns",
     "document_row",
     "normalize_query",
-    "signed_simhash",
     "search_language",
+    "signed_simhash",
     "stored_file_row",
     "unsigned_simhash",
 ]

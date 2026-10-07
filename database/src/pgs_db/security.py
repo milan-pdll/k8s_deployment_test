@@ -13,7 +13,9 @@ def _hasher() -> Any:
     try:
         from argon2 import PasswordHasher
     except ImportError as exc:  # pragma: no cover - depends on the install
-        raise RuntimeError('password hashing needs the auth extra: pip install "pgs-db[auth]"') from exc
+        raise RuntimeError(
+            'password hashing needs the auth extra: pip install "pgs-db[auth]"'
+        ) from exc
     return PasswordHasher()
 
 

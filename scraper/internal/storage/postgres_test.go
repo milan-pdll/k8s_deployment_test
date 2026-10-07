@@ -54,7 +54,7 @@ func TestPostgresWriter_AgainstMigratedSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }() // test cleanup; the assertions ran already
 
 	runID, err := w.StartRun(ctx, StartRunInput{SeedCount: 1, MaxDepth: 2, MaxPages: 10})
 	if err != nil {

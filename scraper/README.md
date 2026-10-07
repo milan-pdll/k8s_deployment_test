@@ -1,94 +1,67 @@
-# System Architecture & Technical Design Specification
+# Scraper (Go)
 
-## Bilingual Search Engine Core with Spatial Intelligence (Internal Service)
+The crawler of the PGS Search Engine: whole-website crawls of the seeded Nepali sites,
+run as Temporal workflows, with pages written to S3 and one Kafka event per finished
+website for the ETL. System context: [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
 
----
+| Binary | What |
+| --- | --- |
+| `cmd/worker` | Temporal worker (task queue `scraper-task-queue`, optionally sharded by host): `CrawlDomainsWorkflow` (all sites, `MaxConcurrentDomains` at a time) -> `CrawlWorkflow` per site (robots.txt, sitemaps, fetch, render, parse, store, dedup) -> site event |
+| `cmd/api` | read-only documents API + Swagger UI over the bucket (`/docs`, `/healthz`) |
+| `cmd/scraper` | starts a crawl from the command line (Airflow's `scraper_crawl_schedule` normally does) |
 
-## 1. Executive Summary
+## Output contract
 
-This document details the architecture for the **Search Engine Core**, a highly scalable, bilingual search engine covering the Nepalese web ecosystem.
+- **S3** (`internal/storage`, details in [`docs/SCHEMA.md`](docs/SCHEMA.md)):
+  `<prefix>/<crawl_run_id>/<host>/<sha256(normalized_url)>.json` = one `model.Document`;
+  raw HTML at `<prefix>/html/<host>/<content_hash>.html` (rendered captures too).
+- **Kafka** `scraped_files_topic`, key = host, one `site_crawl_completed` event per website,
+  published with `acks=all` only after every page of the site is stored
+  ([`internal/storage/site_events.go`](internal/storage/site_events.go)):
+  `event_type`, `schema_version` (1), `crawl_run_id`, `workflow_id`, `target_domain`,
+  `status` (`completed` | `failed`), `error`, `pages_fetched`, `bucket`, `key_prefix`,
+  `documents_prefix`, `completed_at`. Add fields freely; remove or retype one only with a
+  new `schema_version`, after the ETL (`ETL/spark/site_event.py`) understands it.
+- It never writes PostgreSQL in this deployment (the ETL saves each page's Document to
+  Bronze); `internal/db` (sqlc) and `--storage` alternatives remain for other setups.
 
-**Crucially, this Search Engine exposes no public APIs.** It operates entirely as an internal, backend microservice within a private virtual network. It receives queries and streams results exclusively via high-performance **gRPC** protocols to a dedicated API Gateway layer.
+## Crawling rules and safety
 
-The core pipeline features **Geo-Spatial & Administrative Entity Intelligence**, enabling it to process both standard lexical queries and strict region-bounded administrative searches over its OpenSearch indices.
+- **robots.txt (RFC 9309)** (`internal/robots`): per-origin cache (24 h), longest match
+  wins, `*`/`$` patterns, product-token group matching; 4xx = no restrictions; 5xx, 429 or a
+  network error = the origin is disallowed for now and the activity retries; Crawl-delay is
+  honored (capped at 10 s) by spacing the fetcher's requests to the host.
+- **Public addresses only** (`internal/netguard`): every connection -- pages, robots.txt,
+  sitemaps, redirects -- is checked at dial time on the resolved IP (loopback, RFC 1918,
+  link-local/cloud metadata, CGNAT, multicast, reserved, NAT64/6to4-embedded private
+  addresses are refused), so DNS rebinding cannot get around it; no HTTP proxy is used.
+  Headless Chrome runs on its own Docker network (`crawl-egress`) for the same reason.
+- **Bounded fetches** (`internal/fetcher`): http/https only, at most 10 redirects (each
+  re-checked), 5 MiB body (decompressed), 1 MiB headers, connect/TLS/header/total timeouts,
+  per-host politeness and rate limits, optional bandwidth cap. Permanent failures (refused
+  address, unknown host, bad certificate, redirect loop) are recorded once, transient ones
+  retried by Temporal.
 
----
+## Configuration
 
-## 2. Core Search Engine Architecture (Internal Network)
+Every flag of `cmd/worker` is also an environment variable of the same name in upper case
+(`internal/envflag`), e.g. `TEMPORAL_ADDRESS`, `STORAGE` (`s3`), `S3_BUCKET`, `S3_ENDPOINT`,
+`KAFKA_BROKERS`, `KAFKA_TOPIC`, `RENDER` (`off` | `auto` | `always`), `CHROME_URL`,
+`TASK_QUEUE_SHARDS` / `SHARD_INDEX`, `MAX_CONCURRENT_ACTIVITIES`, `METRICS_ADDRESS`
+(`:9090`, Prometheus metrics, [`docs/METRICS.md`](docs/METRICS.md)), `USER_AGENT`.
+Docker compose sets them for the `scraper-worker*` services.
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        SEARCH ENGINE INFRASTRUCTURE (Internal)         │
-└────────────────────────────────────────────────────────────────────────┘
+## Development
 
- [ Spark ETL: LangID + Geo-Tagging ] ──► [ OpenSearch Bulk Ingestion ]
-                                                │
-                                                ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│ 1. MULTI-LINGUAL & GEO-INDEXED DOCUMENT STORE (OpenSearch)             │
-│    - Indices: `np_web_pages`, `np_documents`, `np_entities`            │
-│    - Dual-Analyzers for English/Nepali & nested geo-hierarchy filters  │
-└────────────────────────────────────────────────────────────────────────┘
-                                                ▲
-                                                │
-┌───────────────────────────────────────────────┴────────────────────────┐
-│ 2. SEARCH ENGINE CORE SERVICE (Go / Python)                            │
-│    - Query LangID & Devanagari Normalizer                              │
-│    - Admin Code Filter Engine (`province`, `district`, `local_body`)   │
-│    - Stage 1: BM25 candidate fetch (with optional hard Geo-Filtering)  │
-│    - Stage 2: LightGBM Re-Ranker                                       │
-│    - Exposes internal gRPC server (e.g., `SearchService`)              │
-└───────────────────────────────────────────────┬────────────────────────┘
-                                                │ 
-                                                ▼ 
-                                   [ Protobuf / gRPC Stream ] 
-                                   (To External API Gateway)
-
-```
-
----
-
-## 3. Query Processing Subsystems
-
-The Search Engine Core listens for incoming gRPC messages containing user intent, location filters, and pagination data. It processes two primary types of searches:
-
-### 3.1 Flow A: Standard Free-Text Search
-
-When a standard query is received via gRPC:
-
-1. **Language Processing:** The core detects the language, applies stemming, and expands Devanagari/Romanized variants.
-2. **BM25 Retrieval & LTR Ranking:** OpenSearch retrieves the top 500 matches across ALL regions. The LightGBM model ranks them by relevance, domain authority, and freshness.
-3. **Serialization:** The results are packed into a Protobuf message and sent back to the API Gateway.
-
-### 3.2 Flow B: Interactive Map & Region-Based Filtering
-
-When a geo-filtered query is received via gRPC (e.g., bounded to `district_code=D39`):
-
-1. **Filter Application:** The core constructs a strict Boolean OpenSearch query locking the search space to the specified administrative boundaries.
-2. **Regional Ranking:** Candidates are fetched and ranked.
-3. **Knowledge Assembly:** The core retrieves the specific administrative Knowledge Card (e.g., Official Portal links for Pokhara Municipality) and embeds it in the gRPC response payload.
-
----
-
-## 4. Repository Layout
-
-```
-search-engine/
-├── go.mod
-├── Makefile
-├── cmd/searchengine/       # entrypoint (main.go)
-├── internal/
-│   ├── config/             # env/config.yaml loading
-│   ├── indexer/            # Kafka consumer -> OpenSearch bulk ingestion
-│   ├── query/              # LangID, Devanagari normalizer, BM25 candidate fetch
-│   ├── ranker/              # stage-2 re-rank feature extraction + Go<->Python bridge
-│   └── grpcserver/         # SearchService gRPC implementation
-├── proto/
-│   └── search_engine.proto # gRPC contract shared with the API Gateway
-└── python/reranker/        # LightGBM re-ranking model
+```bash
+go build ./... && go vet ./... && go test -race ./...
+gofmt -l .                                   # must print nothing
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run --config=.golangci.yml ./...
+make sqlc                                    # after database/sql/scraper_schema.sql changed
 ```
 
-Build work here is split across a 6-person team, 10 commits each — ask
-whoever set up the project for the task-split checklist.
-
----
+Tests that run `httptest` servers build their fetcher with
+`fetcher.WithAllowPrivateNetworks(true)` (127.0.0.1 is refused by default). More:
+[`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md), [`docs/TESTING.md`](docs/TESTING.md),
+[`docs/WHOLE_DOMAIN.md`](docs/WHOLE_DOMAIN.md), [`docs/SCALING.md`](docs/SCALING.md),
+[`docs/RESILIENCE.md`](docs/RESILIENCE.md).

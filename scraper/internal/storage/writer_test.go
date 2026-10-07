@@ -142,7 +142,7 @@ func TestNoopFreshnessChecker_And_NoopRunRecorder_AreWhatNDJSONUses(t *testing.T
 	if err != nil {
 		t.Fatalf("NewNDJSONWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }() // test cleanup; the assertions ran already
 
 	if _, ok := interface{}(w).(FreshnessChecker); ok {
 		t.Error("NDJSONWriter unexpectedly implements FreshnessChecker -- cmd/worker's fallback-to-Noop logic would silently stop applying")

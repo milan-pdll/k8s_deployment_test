@@ -21,7 +21,8 @@ saves it; `payload_from_transform` does just the conversion.
 A transform that raises marks just that row FAILED with the error; the batch
 carries on. A transform whose virus scan flags the payload raises `Infected`
 instead, after moving the object to the quarantine bucket: the row is recorded in
-`quarantined_files` and parked as QUARANTINED, never FAILED. Run `SilverRepository.release_stale` on a schedule to recover rows
+`quarantined_files` and parked as QUARANTINED, never FAILED. Run
+`SilverRepository.release_stale` on a schedule to recover rows
 from workers that died mid-batch.
 """
 
@@ -32,8 +33,8 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from .models import DEFAULT_EMBEDDING_MODEL, CrawledDocument, Page, StoredFile
 from .ingest import upsert_run
+from .models import DEFAULT_EMBEDDING_MODEL, CrawledDocument, Page, StoredFile
 from .repositories.bronze import BronzeRepository
 from .repositories.reference import ReferenceRepository
 from .repositories.silver import SilverRepository
@@ -370,7 +371,7 @@ def _save_one(
         with session_factory() as s, s.begin():
             quarantine(SilverRepository(s), infected)
         result.quarantined += 1
-    except Exception as exc:  # noqa: BLE001 -- any transform/save error parks the row
+    except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_LENGTH]
         with session_factory() as s, s.begin():
             mark_failed(SilverRepository(s), row_id, message)

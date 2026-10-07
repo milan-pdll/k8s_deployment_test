@@ -1,0 +1,113 @@
+# ETL worker: the Temporal worker for EtlBatchWorkflow (etl-task-queue) and the Spark
+# driver (one long-lived Spark application on spark-master). Each site of a batch is one
+# activity: S3 -> ClamAV -> text -> LaBSE -> PostgreSQL Bronze + Silver (role pgs_etl).
+# Same as compose's etl-worker; runs the ETL image's /opt/etl-venv interpreter.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etl-worker
+  labels:
+    app.kubernetes.io/name: etl-worker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one pod owns the model cache volume
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: etl-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: etl-worker
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      # Running sites get ETL_SHUTDOWN_GRACE_SECONDS to finish; the rest is retried.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 0 # the Airflow image's group, so the volume is writable for uid 50000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-database
+          image: pgs-search-engine/postgres
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until [ "$(psql -h postgres -U pgs_etl -d "$POSTGRES_DB" -tAc 'SELECT count(*) FROM local_bodies' 2>/dev/null)" = "753" ]; do
+                echo "waiting for db-bootstrap"; sleep 5
+              done
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: POSTGRES_DB }
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: PGS_ETL_DB_PASSWORD }
+          securityContext:
+            runAsUser: 999
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 64Mi }
+      containers:
+        - name: etl-worker
+          image: pgs-search-engine/etl
+          imagePullPolicy: IfNotPresent
+          # Airflow's entrypoint is bypassed: uid 50000 exists in the image's passwd.
+          command: ["/usr/bin/dumb-init", "--", "/opt/etl-venv/bin/python", "worker.py"]
+          workingDir: /opt/etl/temporal
+          envFrom:
+            - configMapRef:
+                name: pgs-config
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: POSTGRES_DB }
+            - name: PGS_ETL_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: PGS_ETL_DB_PASSWORD }
+            - name: DATABASE_URL
+              value: postgresql+psycopg://pgs_etl:$(PGS_ETL_DB_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+            - { name: DB_APPLICATION_NAME, value: pgs-etl-worker }
+            - { name: SPARK_MASTER, value: "spark://spark-master:7077" }
+            - { name: SPARK_EXECUTOR_MEMORY, value: 1g }
+            - { name: SPARK_EXECUTOR_CORES, value: "1" }
+            - { name: ETL_SITE_CONCURRENCY, value: "4" }
+            - { name: ETL_SHUTDOWN_GRACE_SECONDS, value: "90" }
+            - { name: ETL_HEARTBEAT_FILE, value: /tmp/etl-worker.alive }
+            - { name: S3_ENDPOINT, value: "http://s3:4566" }
+            - { name: AWS_REGION, value: us-east-1 }
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: S3_ACCESS_KEY_ID }
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: S3_SECRET_ACCESS_KEY }
+          # Spark executors connect back to the driver on the pod IP (spark.driver.host,
+          # random ports): no Service is needed in front of it.
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "test $(( $(date +%s) - $(cat /tmp/etl-worker.alive 2>/dev/null || echo 0) )) -lt 120"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          volumeMounts:
+            - name: models
+              mountPath: /home/airflow/.cache/huggingface
+          securityContext:
+            runAsUser: 50000
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          # LaBSE (~1.8 GB) + the Spark driver JVM.
+          resources:
+            requests: { cpu: 500m, memory: 3Gi }
+            limits: { memory: 5Gi }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: etl-models

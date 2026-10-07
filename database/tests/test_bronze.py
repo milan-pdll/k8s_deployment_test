@@ -13,15 +13,15 @@ NOW = datetime(2026, 9, 22, tzinfo=UTC)
 
 
 def make_doc(**kw: Any) -> CrawledDocument:
-    base = dict(
-        url="https://mofaga.gov.np/notice/1?utm=x",
-        normalized_url="https://mofaga.gov.np/notice/1",
-        host="mofaga.gov.np",
-        title="सूचना",
-        content_hash="a" * 64,
-        fetched_at=NOW,
-        status_code=200,
-    )
+    base = {
+        "url": "https://mofaga.gov.np/notice/1?utm=x",
+        "normalized_url": "https://mofaga.gov.np/notice/1",
+        "host": "mofaga.gov.np",
+        "title": "सूचना",
+        "content_hash": "a" * 64,
+        "fetched_at": NOW,
+        "status_code": 200,
+    }
     base.update(kw)
     return CrawledDocument(**base)
 

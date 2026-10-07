@@ -186,11 +186,9 @@ WHERE normalized_url = $1 ORDER BY fetched_at DESC LIMIT 1;
 | Failed fetch | Store it: set `status_code` and `error`. `title`/`text` become `NULL` |
 | Missing required field | Reject before the statement is issued, so a bad record cannot half-write |
 
-> **Open question for the scraper and ETL teams.** `crawled_documents` accepts any
-> `status_code`, and `Document.Error` implies failed fetches are recorded. The ETL's Kafka
-> consumer (`ETL/kafka/consumer.py`) rejects anything outside `200..299`. One of the two is
-> wrong. If failures should not be stored, that is a `CHECK` constraint and a migration; if they
-> should, the consumer needs to stop dropping them.
+> **Settled (2026-10-07).** `crawled_documents` accepts any `status_code`; the ETL
+> (`ETL/spark/site_pipeline.py`) skips Documents of failed fetches (an `error`, or a status
+> outside `200..299`) before they reach Bronze, so only fetched pages are stored.
 
 ---
 

@@ -1,0 +1,13 @@
+# spark://spark-master:7077 for the ETL worker (driver) and the Spark workers.
+apiVersion: v1
+kind: Service
+metadata:
+  name: spark-master
+  labels:
+    app.kubernetes.io/name: spark-master
+spec:
+  selector:
+    app.kubernetes.io/name: spark-master
+  ports:
+    - { name: spark, port: 7077, targetPort: spark }
+    - { name: ui, port: 8080, targetPort: ui }

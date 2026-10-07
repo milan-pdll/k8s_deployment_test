@@ -29,6 +29,11 @@ spec:
           ports:
             - name: http
               containerPort: 3000
+          # The Next server calls the API in-cluster; browsers reach the API through the
+          # same Ingress/proxy as the UI (paths /api/v1/ and /health/).
+          env:
+            - { name: API_INTERNAL_URL, value: "http://api:8000" }
+            - { name: API_TIMEOUT_MS, value: "10000" }
           readinessProbe:
             httpGet:
               path: /

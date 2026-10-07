@@ -1,7 +1,7 @@
 # Next.js UI. From the host:
 #   kubectl -n pgs-search-engine port-forward svc/ui 3000:3000
-# NEXT_PUBLIC_API_BASE_URL is baked in at image build time (a host URL, e.g. the API's
-# port-forward on http://localhost:8000).
+# The UI's server calls the API itself (API_INTERNAL_URL); nothing is baked into the
+# image at build time.
 apiVersion: v1
 kind: Service
 metadata:

@@ -168,24 +168,39 @@ func (a *Activities) ProcessPage(ctx context.Context, in ProcessPageInput) (Proc
 		NormalizedURL: normalize.Canonical(in.URL),
 	}
 
-	if !a.Robots.Allowed(ctx, in.URL) {
+	// Crawl-delay is applied by the fetcher itself: the robots guard spaces its
+	// requests to the host when it reads the file.
+	allowed, err := a.Robots.Allowed(ctx, in.URL)
+	if err != nil {
+		if fetcher.IsPermanent(err) {
+			// The origin can never be fetched (refused address, unknown host,
+			// invalid URL): record it once instead of retrying.
+			out.Skipped = true
+			out.SkipReason = "robots.txt not retrievable: " + err.Error()
+			metrics.PagesFetched.WithLabelValues(metrics.OutcomeNetworkError).Inc()
+			return out, nil
+		}
+		// RFC 9309: an unreachable robots.txt disallows the origin for now --
+		// let Temporal retry later.
+		return out, fmt.Errorf("robots.txt for %s: %w", in.URL, err)
+	}
+	if !allowed {
 		out.Skipped = true
 		out.SkipReason = "disallowed by robots.txt"
 		metrics.PagesFetched.WithLabelValues(metrics.OutcomeSkippedRobots).Inc()
 		return out, nil
 	}
-	if delay := a.Robots.CrawlDelay(ctx, in.URL); delay > 0 {
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			return out, ctx.Err()
-		}
-	}
 
 	res, err := a.Fetcher.Get(ctx, in.URL)
 	if err != nil {
-		// Network/timeout errors are transient -- let Temporal retry.
 		metrics.PagesFetched.WithLabelValues(metrics.OutcomeNetworkError).Inc()
+		if fetcher.IsPermanent(err) {
+			// Refused address, redirect loop, bad certificate...: retrying
+			// can't help, so the workflow records the failure and moves on.
+			out.FetchError = err.Error()
+			return out, nil
+		}
+		// Network/timeout errors are transient -- let Temporal retry.
 		return out, fmt.Errorf("fetch %s: %w", in.URL, err)
 	}
 	metrics.FetchDuration.Observe(res.Duration.Seconds())
@@ -442,7 +457,12 @@ func (a *Activities) DiscoverSitemapURLs(ctx context.Context, in DiscoverSitemap
 		return out, nil
 	}
 
-	sitemapURLs := a.Robots.Sitemaps(ctx, in.SeedURL)
+	sitemapURLs, err := a.Robots.Sitemaps(ctx, in.SeedURL)
+	if err != nil {
+		// No answer from robots.txt means the origin may not be crawled yet
+		// (RFC 9309); the seed's own ProcessPage retries it.
+		return out, nil
+	}
 	if len(sitemapURLs) == 0 {
 		// Many sites serve /sitemap.xml without declaring it in robots.txt.
 		sitemapURLs = []string{seed.Scheme + "://" + seed.Host + "/sitemap.xml"}

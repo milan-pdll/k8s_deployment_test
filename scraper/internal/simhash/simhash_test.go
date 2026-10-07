@@ -4,7 +4,8 @@ import "testing"
 
 func TestFingerprint_IdenticalTextsMatchExactly(t *testing.T) {
 	text := "the quick brown fox jumps over the lazy dog"
-	if Fingerprint(text) != Fingerprint(text) { //nolint:staticcheck // checking Fingerprint is deterministic, not a copy-paste typo
+	first, second := Fingerprint(text), Fingerprint(text)
+	if first != second {
 		t.Error("identical text should produce identical fingerprints")
 	}
 }

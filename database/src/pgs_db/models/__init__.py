@@ -12,7 +12,6 @@ from .gold import (
     SearchQuery,
 )
 from .ops import AdminUser, ErrorLog
-from .views import page_geo_codes, search_documents
 from .silver import (
     DEFAULT_EMBEDDING_MODEL,
     EmbeddingModel,
@@ -26,41 +25,42 @@ from .silver import (
     PageSource,
     QuarantinedFile,
 )
+from .views import page_geo_codes, search_documents
 
 __all__ = [
+    "DEFAULT_EMBEDDING_MODEL",
+    # ops
+    "AdminUser",
     # bronze
     "BronzeIngestState",
     "CrawlRun",
     "CrawledDocument",
-    "StoredFile",
+    "District",
     # reference
     "Domain",
-    "Province",
-    "District",
-    "LocalBody",
-    "RegionLink",
-    # silver
-    "Page",
-    "PageGeoTag",
-    "PageContact",
-    "PageSource",
-    "PageMedia",
-    "Entity",
-    "PageEntity",
-    "PageEmbedding",
-    "QuarantinedFile",
-    "EmbeddingModel",
-    "DEFAULT_EMBEDDING_MODEL",
     # gold
     "DomainStats",
-    "GeoContentStats",
-    "PageScore",
-    "SearchQuery",
-    "SearchClick",
-    "RelevanceJudgment",
-    # ops
-    "AdminUser",
+    "EmbeddingModel",
+    "Entity",
     "ErrorLog",
+    "GeoContentStats",
+    "LocalBody",
+    # silver
+    "Page",
+    "PageContact",
+    "PageEmbedding",
+    "PageEntity",
+    "PageGeoTag",
+    "PageMedia",
+    "PageScore",
+    "PageSource",
+    "Province",
+    "QuarantinedFile",
+    "RegionLink",
+    "RelevanceJudgment",
+    "SearchClick",
+    "SearchQuery",
+    "StoredFile",
     # views (read-only)
     "page_geo_codes",
     "search_documents",

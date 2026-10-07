@@ -1,0 +1,14 @@
+# Direct dependencies of the ETL processing environment (/opt/etl-venv in ETL/Dockerfile):
+# the Temporal ETL worker, which is the Spark driver, and the Spark executors. pgs-db is
+# installed next to them from database/. Airflow's own environment only gets what the
+# DAGs import (temporalio, kafka-python; see ETL/Dockerfile). Every version, including
+# the transitive ones, is pinned by ETL/constraints.txt.
+pyspark==3.5.3
+temporalio==1.34.0
+boto3==1.43.106
+clamd==1.0.2
+torch==2.14.1+cpu
+# Same versions as the search engine (search-engine/constraints.txt): documents and
+# queries must be embedded by the same code and model revision.
+transformers==5.18.0
+sentence-transformers==6.1.0

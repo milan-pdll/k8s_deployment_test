@@ -47,6 +47,13 @@ Every 30 minutes (`SCRAPER_CRAWL_SCHEDULE`) it reads the websites from the
 runs. The workflow ID is fixed, so a tick while the last crawl is still running
 is skipped.
 
+`pgs_db_jobs_frequent` / `_hourly` / `_daily`
+
+`python -m pgs_db.jobs <job>` with the ETL image's `/opt/etl-venv` interpreter, as the
+`pgs_jobs` role (`PGS_JOBS_DATABASE_URL`): `release-stale` and `stats` every 10 minutes
+(claims of crashed workers back to the queue; the Gold summaries behind the map and the
+admin dashboard), `scores` hourly, `reference` and `purge` daily.
+
 ## Sample Run
 
 With the stack up (`docker compose --profile scraper up -d`), from the
@@ -63,19 +70,19 @@ Temporal UI (http://localhost:8233) shows the workflows.
 
 ## Notes
 
-The healthcheck and extraction-check DAGs are support workflows; the ingestion
-pipeline is the main ETL workflow.
-
-- `dags/`, `plugins/`, `config/`, `data/` and `../spark` are bind-mounted
-  into the Airflow containers, so edits apply without a rebuild; new DAGs
-  appear within 30-60 seconds and start unpaused.
+- `dags/`, `plugins/`, `config/` and `../spark` (for `site_event.py`) are
+  bind-mounted into the Airflow containers, so edits apply without a rebuild; new
+  DAGs appear within 30-60 seconds and start unpaused.
+- DAG tasks only schedule: they read Kafka and `domains`, start and await Temporal
+  workflows, and run the short `pgs_db` jobs. The ETL itself runs in `etl-worker`
+  and the Spark workers.
 - Task logs are in `data/airflow-logs/` at the repository root (the
   `data-airflow-logs` volume), owned by `AIRFLOW_UID`: set it in `.env` to your
   `id -u` so you can read them.
 - Port 8080 taken: set `AIRFLOW_PORT` in `.env`.
-- A task fails with a ClamAV connection error: on its first start `clamav`
-  downloads its signatures (a few minutes); wait until `docker compose ps`
-  shows it healthy.
+- `process_batch` waits while ClamAV is down: on its first start `clamav`
+  downloads its signatures (a few minutes); the ETL retries sites until it is
+  healthy, and nothing is processed unscanned.
 - Reset only Airflow's database:
   `docker compose exec postgres dropdb -U pgs --force airflow`, then
   `docker compose up -d` (`db-roles` recreates it). (The stack's state is in `./data/` at the

@@ -55,15 +55,16 @@ There is no Celery worker or Redis here. At most 4 task pods run at once
 `kubectl -n pgs-search-engine rollout restart deploy/airflow-scheduler deploy/airflow-webserver`.
 
 Run the ETL pipeline: with the `scraper` block enabled, each website whose crawl finishes
-publishes one event to `scraped_files_topic`; `etl_ingestion_pipeline` picks the new events
-up every 5 minutes and runs the PySpark pipeline (security scan, extraction, dedup,
-embedding) once per site.
+publishes one event to `scraped_files_topic`; `etl_ingestion_pipeline` batches the events and
+starts one `EtlBatchWorkflow` on Temporal per batch. The `etl-worker` Deployment runs it as
+the Spark driver on `spark-master` / `spark-worker` (scan, extraction, LaBSE) and saves the
+pages to PostgreSQL; with the `search` block, `search-indexer` copies them into OpenSearch.
 
 ```bash
 kubectl -n pgs-search-engine port-forward svc/airflow-webserver 8080:8080
 # http://localhost:8080 (login from secrets/secrets.env): etl_ingestion_pipeline runs
 kubectl -n pgs-search-engine get pods -l app.kubernetes.io/name=airflow-task -w
-kubectl create -f k8/jobs/on-demand/opensearch-indexer.yaml           # index the JSONL output
+kubectl -n pgs-search-engine logs deploy/etl-worker -f                 # one summary per site
 ```
 
 ## Optional parts (compose profiles)
@@ -73,15 +74,15 @@ whole block, then `kubectl apply -k k8/`.
 
 | Block | Adds |
 | --- | --- |
-| `search` | gRPC search engine (`search-engine:50051`), creating its OpenSearch index first |
-| `scraper` | Temporal (+ its PostgreSQL and UI), LocalStack S3 (+ browser), headless Chrome, crawler worker, documents API |
+| `search` | gRPC search engine (`search-engine:50051`, gRPC health probes) and the search indexer |
+| `scraper` | LocalStack S3 (+ browser), headless Chrome (with a NetworkPolicy keeping it off the cluster network), crawler worker, documents API |
 | `scraper-sharded` | with `scraper`: three host-sharded workers (StatefulSet) instead of the worker Deployment; also uncomment the `patches:` block |
-| `scraper-schedule` | with `scraper`: CronJob starting a crawl every 15 minutes (edit its seeds first) |
 | `ui` | Next.js UI |
 | `tools` | OpenSearch Dashboards |
 
-One-off Jobs in `jobs/on-demand/` (`kubectl create -f`): `opensearch-indexer.yaml`,
-`etl-spark-test.yaml`, and a crawl:
+Temporal (with its own PostgreSQL and UI) and the Spark cluster are part of the default stack:
+both the crawl and the ETL run on them. Airflow's `scraper_crawl_schedule` DAG starts crawls;
+a one-off crawl is a Job in `jobs/on-demand/` (`kubectl create -f`):
 `SEEDS=https://example.gov.np envsubst < k8/jobs/on-demand/scraper-crawl.yaml.tmpl | kubectl create -f -`
 (or `make k8s-crawl SEEDS=...` in `scraper/`).
 
@@ -113,26 +114,28 @@ file; a new resource goes into its kind's folder and into that list.
 k8/
 ├── kustomization.yaml        what gets applied (default stack + optional blocks), secrets, image tags
 ├── namespaces/               pgs-search-engine (Pod Security: enforce baseline, warn restricted)
-├── configmaps/               pgs-config (service addresses), airflow-config, airflow-pod-template
+├── configmaps/               pgs-config (service addresses, embedding model), airflow-config, airflow-pod-template
 │                             (the KubernetesExecutor's task pod), scraper-config, s3-init
 ├── secrets/                  secrets.env.example -> secrets.env (gitignored) -> Secret pgs-secrets
-├── persistentvolumeclaims/   shared ETL/Airflow volumes, ClamAV signatures, model caches
+├── persistentvolumeclaims/   Airflow logs, ClamAV signatures, model caches
 ├── serviceaccounts/          Airflow scheduler, webserver, task pods
 ├── roles/                    pod launcher (scheduler), pod log reader (webserver)
 ├── rolebindings/             binds those roles to the service accounts
 ├── services/                 one ClusterIP Service per workload
 ├── statefulsets/             PostgreSQL, Kafka, OpenSearch, Airflow DB, Temporal DB, sharded crawler
-├── deployments/              API, ClamAV, Airflow scheduler/webserver, search engine,
-│                             scraper, Temporal, S3, Chrome, UI, Dashboards
+├── deployments/              API, ClamAV, Airflow scheduler/webserver, Temporal, Spark master/
+│                             workers, ETL worker, search engine, search indexer, scraper, S3,
+│                             Chrome, UI, Dashboards
 ├── jobs/                     bootstrap Jobs applied with the stack (db-bootstrap, kafka-init, airflow-init)
 │   └── on-demand/            one-off Jobs, created with `kubectl create -f`
-└── cronjobs/                 scheduled crawl
+└── networkpolicies/          chrome-egress (Chrome: internet + DNS only)
 ```
 
 ## Not covered (non-HA by design)
 
 - No replication or failover: one PostgreSQL, Kafka, OpenSearch and Temporal each.
-- Shared volumes (`airflow-logs`, `etl-processed`, `etl-models`) rely on all pods being on
+- Shared volumes (`airflow-logs`, `etl-models`, `search-models`) rely on all pods being on
   one node; on a multi-node cluster use a ReadWriteMany storage class or remote task logs.
-- No Ingress, NetworkPolicies, autoscaling or backups. The PostgreSQL schema stays owned by
+- No Ingress, autoscaling or backups; the only NetworkPolicy is Chrome's (it needs a CNI that
+  enforces them). The PostgreSQL schema stays owned by
   the `pgs-db` migrations; the scraper has no migrations of its own.

@@ -122,6 +122,9 @@ spec:
             - name: PGS_SCRAPER_DB_PASSWORD
               valueFrom:
                 secretKeyRef: { name: pgs-secrets, key: PGS_SCRAPER_DB_PASSWORD }
+            - name: PGS_JOBS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: PGS_JOBS_DB_PASSWORD }
           securityContext:
             runAsUser: 999
             allowPrivilegeEscalation: false

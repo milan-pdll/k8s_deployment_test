@@ -51,7 +51,9 @@ func TestString_EnvVarOverridesDefault(t *testing.T) {
 
 func TestString_FallsBackToDefaultWhenEnvUnset(t *testing.T) {
 	withFreshFlagSet(t)
-	os.Unsetenv("SOME_UNSET_FLAG")
+	if err := os.Unsetenv("SOME_UNSET_FLAG"); err != nil {
+		t.Fatal(err)
+	}
 
 	v := String("some-unset-flag", "the-default", "usage")
 	if err := flag.CommandLine.Parse(nil); err != nil {

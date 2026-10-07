@@ -1,9 +1,12 @@
+import { redirect } from "next/navigation";
 import { Sidebar } from "@/components/dashboard/Sidebar";
 import { SignOutButton } from "@/components/dashboard/SignOutButton";
 import { getSessionUser } from "@/lib/auth/session";
 
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
+  // proxy.ts only checks that a session cookie exists; the API verifies the token here.
   const user = await getSessionUser();
+  if (!user) redirect("/login?next=/dashboard");
 
   return (
     <div className="flex min-h-screen bg-slate-50 dark:bg-slate-950">
@@ -15,7 +18,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
               PGS Search Engine · Dashboard
             </h1>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Signed in as {user?.name} ({user?.role})
+              Signed in as {user.username} ({user.role})
             </p>
           </div>
           <SignOutButton />

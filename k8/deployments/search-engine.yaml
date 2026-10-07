@@ -26,25 +26,6 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       initContainers:
-        # Creates the OpenSearch index with its mapping (a no-op when it exists); compose's
-        # search-index-init. Retries until OpenSearch answers.
-        - name: create-index
-          image: pgs-search-engine/search-engine
-          imagePullPolicy: IfNotPresent
-          command:
-            - sh
-            - -c
-            - until python scripts/create_index.py; do echo "waiting for opensearch"; sleep 5; done
-          env:
-            - { name: OPENSEARCH_HOST, value: opensearch }
-            - { name: OPENSEARCH_PORT, value: "9200" }
-            - { name: OPENSEARCH_INDEX, value: np_web_pages }
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities: { drop: ["ALL"] }
-          resources:
-            requests: { cpu: 50m, memory: 256Mi }
-            limits: { memory: 1Gi }
         - name: wait-for-database
           image: pgs-search-engine/postgres
           imagePullPolicy: IfNotPresent
@@ -77,51 +58,61 @@ spec:
           ports:
             - name: grpc
               containerPort: 50051
-          # Not pgs-config: there SEARCH_GRPC_HOST is the client-side address, while this
-          # server reads it as its bind address.
+          # Not pgs-config's SEARCH_GRPC_HOST: that is the client-side address, while this
+          # server reads it as its bind address. The server creates the OpenSearch index
+          # (alias np_web_pages -> np_web_pages_v<N>) itself when it is missing.
           env:
             - { name: SEARCH_GRPC_HOST, value: 0.0.0.0 }
             - { name: SEARCH_GRPC_PORT, value: "50051" }
             - { name: OPENSEARCH_HOST, value: opensearch }
             - { name: OPENSEARCH_PORT, value: "9200" }
             - { name: OPENSEARCH_INDEX, value: np_web_pages }
-            # vector_search/config.py (psycopg2) and pgs_db (DATABASE_URL), both as pgs_search
-            - { name: POSTGRES_HOST, value: postgres }
-            - { name: POSTGRES_PORT, value: "5432" }
-            - { name: POSTGRES_USER, value: pgs_search }
+            - name: EMBEDDING_MODEL_NAME
+              valueFrom:
+                configMapKeyRef: { name: pgs-config, key: EMBEDDING_MODEL_NAME }
+            - name: EMBEDDING_MODEL_REVISION
+              valueFrom:
+                configMapKeyRef: { name: pgs-config, key: EMBEDDING_MODEL_REVISION }
+            - name: EMBEDDING_DIMENSIONS
+              valueFrom:
+                configMapKeyRef: { name: pgs-config, key: EMBEDDING_DIMENSIONS }
+            - { name: TRANSLATION_MODEL_REVISION, value: f8d333a098d19b4fd9a8b18f94170487ad3f821d }
+            # Dense retrieval through pgs_db (page_embeddings, pgvector) as pgs_search.
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef: { name: pgs-secrets, key: POSTGRES_DB }
-            - name: POSTGRES_PASSWORD
+            - name: PGS_SEARCH_DB_PASSWORD
               valueFrom:
                 secretKeyRef: { name: pgs-secrets, key: PGS_SEARCH_DB_PASSWORD }
             - name: DATABASE_URL
-              value: postgresql+psycopg://pgs_search:$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+              value: postgresql+psycopg://pgs_search:$(PGS_SEARCH_DB_PASSWORD)@postgres:5432/$(POSTGRES_DB)
             - { name: DB_APPLICATION_NAME, value: pgs-search }
           volumeMounts:
             - name: models
               mountPath: /home/app/.cache/huggingface
-          # The server binds its port only after loading every model; the first start
-          # downloads them, so allow up to 30 minutes.
+          # The server reports SERVING on grpc.health.v1 only after loading every model;
+          # the first start downloads them, so allow up to 30 minutes.
           startupProbe:
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 50051
+              service: search.engine.v1.SearchService
             periodSeconds: 15
             failureThreshold: 120
           readinessProbe:
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 50051
+              service: search.engine.v1.SearchService
             periodSeconds: 15
           livenessProbe:
-            tcpSocket:
-              port: grpc
+            grpc:
+              port: 50051
             periodSeconds: 30
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
           resources:
-            requests: { cpu: 500m, memory: 3Gi }
-            limits: { memory: 4Gi }
+            requests: { cpu: 500m, memory: 4Gi }
+            limits: { memory: 6Gi }
       volumes:
         - name: models
           persistentVolumeClaim:

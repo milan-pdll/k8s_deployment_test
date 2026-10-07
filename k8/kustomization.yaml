@@ -20,18 +20,14 @@ labels:
 resources:
   # --- Namespace -----------------------------------------------------------------
   - namespaces/pgs-search-engine.yaml
-
   # --- Config --------------------------------------------------------------------
   - configmaps/pgs-config.yaml
   - configmaps/airflow-config.yaml
   - configmaps/airflow-pod-template.yaml
-
   # --- Storage -------------------------------------------------------------------
   - persistentvolumeclaims/airflow-logs.yaml
-  - persistentvolumeclaims/etl-processed.yaml
   - persistentvolumeclaims/etl-models.yaml
   - persistentvolumeclaims/clamav-db.yaml
-
   # --- Access control (Airflow's KubernetesExecutor launches task pods) ------------
   - serviceaccounts/airflow-scheduler.yaml
   - serviceaccounts/airflow-webserver.yaml
@@ -40,7 +36,6 @@ resources:
   - roles/airflow-pod-log-reader.yaml
   - rolebindings/airflow-scheduler.yaml
   - rolebindings/airflow-webserver.yaml
-
   # --- Services ------------------------------------------------------------------
   - services/postgres.yaml
   - services/kafka.yaml
@@ -49,19 +44,28 @@ resources:
   - services/api.yaml
   - services/airflow-db.yaml
   - services/airflow-webserver.yaml
-
+  - services/temporal-db.yaml
+  - services/temporal.yaml
+  - services/temporal-ui.yaml
+  - services/spark-master.yaml
   # --- StatefulSets (data stores) ------------------------------------------------
   - statefulsets/postgres.yaml
   - statefulsets/kafka.yaml
   - statefulsets/opensearch.yaml
   - statefulsets/airflow-db.yaml
-
+  - statefulsets/temporal-db.yaml
   # --- Deployments ---------------------------------------------------------------
   - deployments/api.yaml
   - deployments/clamav.yaml
   - deployments/airflow-scheduler.yaml
   - deployments/airflow-webserver.yaml
-
+  # Temporal runs both the crawl workflows and the ETL batch workflows.
+  - deployments/temporal.yaml
+  - deployments/temporal-ui.yaml
+  # The ETL: Spark standalone cluster + the Temporal ETL worker (the Spark driver).
+  - deployments/spark-master.yaml
+  - deployments/spark-worker.yaml
+  - deployments/etl-worker.yaml
   # --- Jobs (bootstrap; re-run on every apply) ------------------------------------
   - jobs/db-bootstrap.yaml
   - jobs/kafka-init.yaml
@@ -70,48 +74,41 @@ resources:
   # ================================================================================
   # Optional parts (compose profiles). Uncomment a whole block to enable it.
   # ================================================================================
-
-  # --- search: gRPC search engine (search-engine:50051) + its OpenSearch index.
-  #     Needs ~3 GB RAM; the first start downloads ~2.5 GB of models.
+  # --- search: gRPC search engine (search-engine:50051) and the search indexer
+  #     (PostgreSQL Silver -> OpenSearch). Needs ~5 GB RAM; the first start downloads
+  #     ~4.5 GB of models.
   # - persistentvolumeclaims/search-models.yaml
   # - services/search-engine.yaml
   # - deployments/search-engine.yaml
+  # - deployments/search-indexer.yaml
 
-  # --- scraper: Go crawler with Temporal (+UI, own PostgreSQL), LocalStack S3
-  #     (+browser) and headless Chrome. The worker writes pages to S3 and publishes one
-  #     event per crawled website to Kafka (scraped_files_topic) for the ETL DAG; it
-  #     never writes PostgreSQL.
-  #     Start a crawl with jobs/on-demand/scraper-crawl.yaml.tmpl.
+  # --- scraper: Go crawler, LocalStack S3 (+browser) and headless Chrome. The worker
+  #     writes pages to S3 and publishes one event per crawled website to Kafka
+  #     (scraped_files_topic) for the ETL DAG; it never writes PostgreSQL. Airflow's
+  #     scraper_crawl_schedule DAG starts the crawls; for a one-off crawl use
+  #     jobs/on-demand/scraper-crawl.yaml.tmpl. The NetworkPolicy keeps Chrome off the
+  #     cluster network (needs a NetworkPolicy-enforcing CNI).
   # - configmaps/scraper-config.yaml
   # - configmaps/s3-init.yaml
-  # - services/temporal-db.yaml
-  # - services/temporal.yaml
-  # - services/temporal-ui.yaml
   # - services/s3.yaml
   # - services/s3-browser.yaml
   # - services/chrome.yaml
   # - services/scraper-worker-metrics.yaml
   # - services/scraper-api.yaml
-  # - statefulsets/temporal-db.yaml
-  # - deployments/temporal.yaml
-  # - deployments/temporal-ui.yaml
   # - deployments/s3.yaml
   # - deployments/s3-browser.yaml
   # - deployments/chrome.yaml
   # - deployments/scraper-worker.yaml
   # - deployments/scraper-api.yaml
+  # - networkpolicies/chrome-egress.yaml
 
   # --- scraper-sharded (with `scraper`): three host-sharded workers instead of the
   #     scraper-worker Deployment. Also uncomment the patch under `patches:` below.
   # - services/scraper-worker-sharded.yaml
   # - statefulsets/scraper-worker-sharded.yaml
 
-  # --- scraper-schedule (with `scraper`): start a crawl every 15 minutes (edit its
-  #     seeds first).
-  # - cronjobs/scraper-crawl.yaml
-
-  # --- ui: Next.js UI (its image only builds once ui/src/lib and the UI's npm
-  #     dependencies are in the repository).
+  # --- ui: Next.js UI. Route /api/v1/ and /health/ to the api Service and the rest to
+  #     the ui Service on the same host (Ingress or proxy), as nginx does in compose.
   # - services/ui.yaml
   # - deployments/ui.yaml
 

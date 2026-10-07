@@ -275,7 +275,8 @@ class TestEtlLoop:
     ) -> None:
         with session_factory() as s, s.begin():
             repo = BronzeRepository(s)
-            clean = repo.save_stored_file(stored_exe(document_url=f"{EXE_URL}.pdf", sha256="1" * 64)).id
+            pdf = stored_exe(document_url=f"{EXE_URL}.pdf", sha256="1" * 64)
+            clean = repo.save_stored_file(pdf).id
             bad = repo.save_stored_file(stored_exe()).id
 
         def transform(stored: StoredFile) -> dict[str, Any]:

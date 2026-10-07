@@ -1,8 +1,13 @@
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-src = ["api", "database/src", "search-engine/src"]
-extend-exclude = ["search-engine/src/pgs_search/grpc/generated"]
+src = ["api/src", "database/src", "search-engine/src"]
+# Generated code: the gRPC stubs (grpc_tools.protoc) and Alembic revisions (kept as
+# `alembic revision --autogenerate` writes them).
+extend-exclude = [
+    "search-engine/src/pgs_search/grpc/generated",
+    "database/migrations/versions",
+]
 
 [tool.ruff.lint]
 select = [
@@ -18,10 +23,12 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["pgs_db", "pgs_search"]
+known-first-party = ["pgs_api", "pgs_db", "pgs_search"]
 
 [tool.pyright]
-include = ["api", "database/src"]
+include = ["api/src", "api/tests", "database/src"]
+# The API's own package and the search engine's generated gRPC stubs it imports.
+extraPaths = ["api/src", "search-engine/src"]
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "strict"

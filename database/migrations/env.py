@@ -32,9 +32,8 @@ def include_object(
         return False
     # One HNSW index per embedding model, created by migrations and
     # SilverRepository.register_embedding_model rather than declared on the model.
-    if type_ == "index" and reflected and (name or "").startswith("ix_page_embeddings_hnsw_"):
-        return False
-    return True
+    per_model_hnsw = (name or "").startswith("ix_page_embeddings_hnsw_")
+    return not (type_ == "index" and reflected and per_model_hnsw)
 
 
 def run_migrations_offline() -> None:

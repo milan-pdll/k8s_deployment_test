@@ -1,40 +1,24 @@
+import { cache } from "react";
 import { cookies } from "next/headers";
-import type { User } from "@/lib/types";
+import { apiFetch } from "@/lib/api/server";
+import { isAdminUser, type AdminUser } from "@/lib/api/types";
 
+/**
+ * The admin session: the API's signed access token (POST /api/v1/auth/login), kept in an
+ * httpOnly cookie. The UI never trusts the cookie's content: every request that needs the
+ * user asks the API (GET /api/v1/auth/me), which verifies the signature and expiry.
+ */
 export const SESSION_COOKIE = "pgs_session";
 
-export const MOCK_USERS: Array<User & { password: string }> = [
-  {
-    email: "admin@pgs.local",
-    password: "admin123",
-    name: "Admin",
-    role: "admin",
-  },
-  {
-    email: "analyst@pgs.local",
-    password: "analyst123",
-    name: "Search Analyst",
-    role: "analyst",
-  },
-];
-
-export function encodeSession(user: User): string {
-  return Buffer.from(JSON.stringify(user), "utf8").toString("base64url");
-}
-
-export function decodeSession(value: string): User | null {
-  try {
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
-    if (parsed && typeof parsed.email === "string") return parsed as User;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-export async function getSessionUser(): Promise<User | null> {
+export async function getSessionToken(): Promise<string | null> {
   const store = await cookies();
-  const raw = store.get(SESSION_COOKIE)?.value;
-  if (!raw) return null;
-  return decodeSession(raw);
+  return store.get(SESSION_COOKIE)?.value || null;
 }
+
+/** The signed-in admin, or null. Cached per request (React cache). */
+export const getSessionUser = cache(async (): Promise<AdminUser | null> => {
+  const token = await getSessionToken();
+  if (!token) return null;
+  const result = await apiFetch("/api/v1/auth/me", isAdminUser, { token });
+  return result.ok ? result.data : null;
+});

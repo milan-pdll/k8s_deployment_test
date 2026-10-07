@@ -96,7 +96,9 @@ class OpsRepository:
         return user
 
     def set_active(self, user_id: int, active: bool) -> AdminUser:
-        """Deactivate or reactivate an account. Refuses to deactivate the last active SUPER_ADMIN."""
+        """Deactivate or reactivate an account.
+
+        Refuses to deactivate the last active SUPER_ADMIN."""
         user = self._require_admin(user_id)
         if not active:
             self._guard_last_super_admin(user)
@@ -187,7 +189,9 @@ class OpsRepository:
             stmt = stmt.where(ErrorLog.occurred_at >= since)
         total = self.session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
         rows = self.session.scalars(
-            stmt.order_by(ErrorLog.occurred_at.desc(), ErrorLog.id.desc()).limit(limit).offset(offset)
+            stmt.order_by(ErrorLog.occurred_at.desc(), ErrorLog.id.desc())
+            .limit(limit)
+            .offset(offset)
         ).all()
         return list(rows), int(total)
 

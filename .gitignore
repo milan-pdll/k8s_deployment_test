@@ -230,3 +230,4 @@ k8/secrets/secrets.env
 # is kept: the data-root volume needs it to exist.
 /data/*
 !/data/.gitkeep
+./idea

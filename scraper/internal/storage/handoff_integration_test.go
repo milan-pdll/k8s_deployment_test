@@ -43,7 +43,7 @@ func TestFetchExtractWriteAndSignalIntegration(t *testing.T) {
 	defer srv.Close()
 
 	ctx := context.Background()
-	f := fetcher.NewWithOptions(fetcher.Options{Timeout: time.Second, DomainRequestsPerSecond: 20, DomainBurst: 1})
+	f := fetcher.NewWithOptions(fetcher.Options{Timeout: time.Second, DomainRequestsPerSecond: 20, DomainBurst: 1, AllowPrivateNetworks: true})
 	result, err := f.Get(ctx, srv.URL)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)

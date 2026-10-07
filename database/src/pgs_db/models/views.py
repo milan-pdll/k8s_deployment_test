@@ -3,7 +3,8 @@
 Views, not tables: they are always 1:1 with the rows they read, so nothing has to
 be refreshed or kept in sync. The SQL lives in the migrations (`b7c1d2e3f4a5`
 creates them, `d4e5f6a7b8c9` adds the ranking columns); these `Table` objects only
-describe the columns so repositories can query them. They sit on their own `MetaData`, so Alembic autogenerate never
+describe the columns so repositories can query them. They sit on their own `MetaData`,
+so Alembic autogenerate never
 tries to create them as tables.
 
 - `page_geo_codes`: every geo tag with its full code chain. A tag resolved only to

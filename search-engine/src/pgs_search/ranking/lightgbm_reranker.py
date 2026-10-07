@@ -1,14 +1,19 @@
-"""LightGBM reranking helpers for search results."""
+"""LightGBM reranking of the fused candidates.
+
+The model is loaded from LightGBM's native text format (models/lightgbm_reranker.txt,
+written by scripts/train_reranker.py) with `lightgbm.Booster` -- no pickle is
+deserialized at serving time. It only reorders the bounded candidate list the pipeline
+gives it; any failure leaves the fusion order in place (the pipeline reports the
+response as degraded).
+"""
 
 from __future__ import annotations
 
 import logging
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-
-import joblib
-import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -25,87 +30,54 @@ FEATURES = [
 ]
 
 SEARCH_ENGINE_ROOT = Path(__file__).resolve().parents[3]
-MODEL_PATH = SEARCH_ENGINE_ROOT / "models" / "lightgbm_reranker.pkl"
+MODEL_PATH = SEARCH_ENGINE_ROOT / "models" / "lightgbm_reranker.txt"
 
 
 @lru_cache(maxsize=1)
 def get_model() -> Any:
-    """Load and cache the trained LightGBM reranker model."""
+    """Load and cache the trained LightGBM booster."""
+    import lightgbm as lgb
+
     if not MODEL_PATH.exists():
         raise FileNotFoundError(
-            "LightGBM reranker model is missing. Expected it at "
-            f"{MODEL_PATH}. Run `PYTHONPATH=search-engine/src "
-            "python search-engine/scripts/train_reranker.py` to create it."
+            f"LightGBM reranker model is missing at {MODEL_PATH}; run "
+            "`PYTHONPATH=search-engine/src python search-engine/scripts/train_reranker.py`."
         )
+    logger.info("loading LightGBM reranker from %s", MODEL_PATH)
+    booster = lgb.Booster(model_file=str(MODEL_PATH))
+    if booster.feature_name() != FEATURES:
+        raise ValueError(f"reranker features {booster.feature_name()} != {FEATURES}")
+    return booster
 
-    logger.info("Loading LightGBM reranker model from %s", MODEL_PATH)
-    return joblib.load(MODEL_PATH)
+
+def _feature_value(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
-def prepare_features(results: list[dict[str, Any]]) -> pd.DataFrame:
-    """Return a DataFrame with all reranker features coerced to safe numeric values."""
+def rerank_results(results: list[dict[str, Any]], top_k: int | None = None) -> list[dict[str, Any]]:
+    """`results` reordered by the model's score (stable for ties), with `rerank_score`
+    set on each; at most `top_k` of them."""
     if not isinstance(results, list):
         raise TypeError("results must be provided as a list.")
-
-    logger.info("Preparing LightGBM features for %d result(s).", len(results))
-    df = pd.DataFrame(results).copy()
-
-    missing_features = [feature for feature in FEATURES if feature not in df.columns]
-    for feature in missing_features:
-        df[feature] = 0
-
-    if missing_features:
-        logger.warning("Added missing LightGBM feature(s) with default 0: %s", missing_features)
-
-    df[FEATURES] = df[FEATURES].apply(pd.to_numeric, errors="coerce")
-    df[FEATURES] = df[FEATURES].replace([float("inf"), float("-inf")], pd.NA)
-    invalid_count = int(df[FEATURES].isna().sum().sum())
-
-    if invalid_count:
-        logger.warning("Replaced %d invalid LightGBM feature value(s) with 0.", invalid_count)
-
-    df[FEATURES] = df[FEATURES].fillna(0)
-    return df
-
-
-def rerank_results(results: list[dict[str, Any]], top_k: int = 10) -> list[dict[str, Any]]:
-    """Rerank search results with the trained LightGBM model."""
-    if not isinstance(results, list):
-        logger.error("Invalid results type for LightGBM reranking: %s", type(results).__name__)
-        raise TypeError("results must be provided as a list.")
-
     if not results:
-        logger.info("No search results provided for LightGBM reranking.")
         return []
-
-    if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
-        logger.error("Invalid top_k value for LightGBM reranking: %r", top_k)
+    if top_k is not None and (isinstance(top_k, bool) or top_k <= 0):
         raise ValueError("top_k must be a positive integer.")
 
-    df = prepare_features(results)
-    df["original_rank"] = range(1, len(df) + 1)
+    import numpy as np
 
-    original_count = len(df)
-    if "id" in df.columns:
-        df = df.drop_duplicates(subset=["id"], keep="first")
-
-    duplicate_count = original_count - len(df)
-    if duplicate_count:
-        logger.warning("Removed %d duplicate LightGBM result(s).", duplicate_count)
-
-    model = get_model()
-    df["rerank_score"] = model.predict(df[FEATURES])
-    df["rerank_score"] = pd.to_numeric(df["rerank_score"], errors="coerce")
-    invalid_scores = int(df["rerank_score"].isna().sum())
-
-    if invalid_scores:
-        logger.warning("Replaced %d invalid LightGBM prediction score(s) with 0.", invalid_scores)
-
-    df["rerank_score"] = df["rerank_score"].fillna(0)
-    df = df.sort_values("rerank_score", ascending=False, kind="mergesort")
-    df["new_rank"] = range(1, len(df) + 1)
-    df["rank_change"] = df["original_rank"] - df["new_rank"]
-
-    reranked = df.head(top_k).to_dict(orient="records")
-    logger.info("Returning %d LightGBM reranked result(s).", len(reranked))
-    return reranked
+    matrix = np.array(
+        [[_feature_value(result.get(feature)) for feature in FEATURES] for result in results],
+        dtype=float,
+    )
+    scores = get_model().predict(matrix)
+    ranked = []
+    for result, score in zip(results, scores, strict=True):
+        ranked.append({**result, "rerank_score": _feature_value(score)})
+    # sorted() is stable: equal scores keep the fusion order.
+    ranked.sort(key=lambda result: result["rerank_score"], reverse=True)
+    return ranked[:top_k] if top_k is not None else ranked

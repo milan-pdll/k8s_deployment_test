@@ -1,6 +1,6 @@
 # Volumes shared by the ETL pods. ReadWriteOnce volumes can be mounted by several pods on
 # the same node, which is what this single-node setup relies on for the shared ones
-# (airflow-logs, etl-processed, etl-models). On a multi-node cluster switch those to a
+# (airflow-logs, etl-models, search-models). On a multi-node cluster switch those to a
 # ReadWriteMany storage class (NFS, CephFS, ...) or to remote task logging.
 apiVersion: v1
 kind: PersistentVolumeClaim

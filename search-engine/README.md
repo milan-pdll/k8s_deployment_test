@@ -1,141 +1,103 @@
 # PGS Search Engine Core
 
-Python search engine core for the PGS bilingual (English/Nepali) search backend.
-Searches an OpenSearch index of Nepalese web pages using BM25 with fuzzy matching
-and query-time normalization/expansion.
+The internal search service: a gRPC `SearchService` (`pgs_search.grpc.server`, :50051)
+that the FastAPI gateway calls, and the search indexer (`pgs_search.indexing.indexer`)
+that keeps OpenSearch a copy of PostgreSQL Silver. System context and contracts:
+[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
 
-## Implemented Features
-
-- **Language detection** for English, Nepali, mixed, and unknown queries
-  (`detect_language` in `pgs_search/query/normalizer.py`).
-- **Unicode and whitespace normalization** — NFC normalization and collapsing of
-  runs of whitespace (`normalize_query`).
-- **English lowercasing** — applied to Latin-script queries during normalization.
-- **Place-name expansion** — English-to-Nepali and Nepali-to-English expansion
-  using a fixed EN-NE place dictionary (`query/data/en_ne_places.json`), applied
-  to the full normalized query and each of its tokens.
-- **Romanized Nepali recognition** — common romanized Nepali words and place
-  names are detected (`detect_language`).
-- **Fuzzy/typo-tolerant BM25 matching** — a `multi_match` query with
-  `fuzziness: "AUTO"` over title, description, and searchable text
-  (`pgs_search/retrieval/lexical.py`).
-- **English stemming** — NLTK `PorterStemmer` stems English Latin-script tokens;
-  stemmed query added as an additional search variant (`lemmatize_query`).
-- **English ↔ Nepali machine translation** — `facebook/nllb-200-distilled-600M`
-  (NLLB-200) translates a query in either direction, using the `npi_Deva` and
-  `eng_Latn` language codes. The model and tokenizer are loaded once and cached
-  with `functools.lru_cache` (`pgs_search/query/translation.py`).
-- **Cross-language query expansion** — `expand_query_terms` translates the full
-  original query when `detect_language` returns `"en"` or `"ne"` and appends the
-  result as one more search variant, alongside normalization, stemming /
-  lemmatization, and place-name expansion. Mixed and unknown queries are never
-  translated. A translation failure is caught and logged as a warning, so the
-  normal expansion variants are still returned.
-- **Standalone query-vector generation** — `all-MiniLM-L6-v2` via
-  `SentenceTransformer`, cached with `functools.lru_cache`
-  (`pgs_search/query/embeddings.py`). Not yet integrated into retrieval.
-- **Result processing** — duplicate-result removal and blank-query handling
-  (blank queries return no results without contacting OpenSearch).
-
-## Known Limitations / Out of Scope
-
-- **Translation only feeds query expansion.** It is not wired into retrieval,
-  ranking, indexing, or result generation; the translated term is just another
-  search variant handed to the existing search path.
-- **Only single-language queries are translated.** `detect_language` returning
-  `"mixed"` or `"unknown"` skips translation entirely.
-- **Nepali lemmatization is not implemented.** The stemmer is English-only and
-  leaves Devanagari tokens untouched; Nepali morphological analysis is out of
-  scope.
-- **Semantic reranking is not integrated.** Query vectors can be generated but
-  are not wired into search/reranking; that belongs to a separate task.
-- **Live BM25 search requires OpenSearch** to be running and reachable at the
-  configured host/port/index (see `pgs_search/config.py`).
-- **The first embedding call may download** the `all-MiniLM-L6-v2`
-  sentence-transformer model from Hugging Face.
-- **The first translation call downloads** the `facebook/nllb-200-distilled-600M`
-  model (~2.3 GB) from Hugging Face and keeps it in memory for the process
-  lifetime. The test suite mocks the loader, so tests never download it.
-
-## Quick Start
-
-```bash
-pip install -e ".[dev]"
-py -m pytest -q
-```
-# PGS Search Engine Service
-
-## gRPC Search Service
-
-Rabin's gRPC layer owns communication between the external FastAPI API service and the
-internal Search Engine service. It exposes `SearchService.ExecuteSearch`, converts protobuf
-requests into a typed adapter input, calls `SearchPipelineAdapter`, and returns protobuf
-`SearchResponse` messages.
-
-Architecture flow:
+## Search pipeline (`src/pgs_search/pipeline.py`)
 
 ```text
-Frontend
-  -> HTTP/REST
-FastAPI Gateway
-  -> gRPC
-Search Engine SearchService
-  -> SearchPipelineAdapter
-  -> gRPC SearchResponse
-FastAPI Gateway
-  -> JSON response
-Frontend
+query ─► validate (1..512 chars, limit 1..100, page*limit <= 500)
+      ─► normalize (NFC, whitespace, lowercase Latin), detect language (ne/en/mixed/unknown)
+      ─► expand: English Porter stem / Nepali lemmatizer, EN<->NE place names,
+         NLLB-200 translation of single-language queries (bounded, cached)   [query/]
+      ─► BM25 on OpenSearch (title^3, description^2, keywords^2, searchable_text;
+         fuzzy; geo/language/content-type filters; highlight snippet)        [required]
+      ─► dense: LaBSE query vector -> pgvector page_embeddings via
+         pgs_db SearchRepository.vector_search, same filters                 [optional]
+      ─► Reciprocal Rank Fusion (k=60) of the two lists                      [ranking/fusion.py]
+      ─► metadata for dense-only hits (one mget, no full text)
+      ─► LightGBM rerank of the fused candidates                             [optional]
+      ─► requested page
 ```
 
-The service listens on port `50051` by default. Override the bind address with
-`SEARCH_GRPC_HOST` and `SEARCH_GRPC_PORT`.
+Every stage is bounded: each retriever returns at most
+`min(max(page*limit, CANDIDATE_POOL), MAX_RESULT_WINDOW)` candidates (100..500). BM25
+scores and cosine similarities are fused by rank, not by score. OpenSearch being down is
+an error (`UNAVAILABLE`); a failure of an optional stage is logged and the response is
+`degraded`. The gRPC deadline flows into the OpenSearch timeouts. Errors are gRPC status
+codes (`INVALID_ARGUMENT`, `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `INTERNAL`); the server
+also serves `grpc.health.v1` and refuses requests beyond `2 x SEARCH_GRPC_WORKERS` in
+flight with `RESOURCE_EXHAUSTED`.
 
-Generate protobuf code:
+## Index (`src/pgs_search/indexing/`)
+
+`mappings.py` is the only definition of the OpenSearch index: `np_web_pages_v1` behind
+the alias `np_web_pages`, `dynamic: strict`, documents keyed by `pages.id`.
+`index_manager.ensure_index` creates index + alias on start (the server and the indexer
+both call it). `indexer.py` claims canonical pages the ETL saved
+(`SearchRepository.claim_for_indexing`, SKIP LOCKED), bulk-indexes them and marks them
+PROCESSED -- or FAILED with OpenSearch's reason -- and puts a batch back when OpenSearch
+is unreachable. Vectors are not in OpenSearch: dense retrieval runs on pgvector.
+
+## Models
+
+| Model | Use | Pinned by |
+| --- | --- | --- |
+| `sentence-transformers/LaBSE` (768-d) | query vectors; must match the ETL's document vectors | `EMBEDDING_MODEL_NAME` / `EMBEDDING_MODEL_REVISION` (dimension checked at load) |
+| `facebook/nllb-200-distilled-600M` | EN<->NE query translation (`TRANSLATION_ENABLED`) | `TRANSLATION_MODEL_REVISION` |
+| `models/lightgbm_reranker.txt` | LightGBM LambdaRank over 9 features (`ranking/lightgbm_reranker.py`), loaded with `lightgbm.Booster` (no pickle) | `scripts/train_reranker.py` on `training_data/` (33 labelled rows: a placeholder model -- retrain on real relevance judgments before relying on it) |
+| `query/nepali_lemma/nepali_hmm_pipeline.pkl` | Nepali lemmatizer (scikit-learn pipeline, pickled with scikit-learn 1.9.0) | shipped in the image |
+
+Models download on first start into `HF_HOME` (a volume in compose).
+
+## Configuration (`src/pgs_search/config.py`, environment only)
+
+`OPENSEARCH_HOST/PORT/SCHEME/USERNAME/PASSWORD/INDEX`, `OPENSEARCH_TIMEOUT_SECONDS` (5),
+`EMBEDDING_*`, `TRANSLATION_ENABLED` / `TRANSLATION_MODEL_*` /
+`TRANSLATION_MAX_QUERY_CHARS` (200), `MAX_QUERY_CHARS` (512), `MAX_LIMIT` (100),
+`MAX_RESULT_WINDOW` (500), `CANDIDATE_POOL` (100), `RERANK_ENABLED`,
+`SEARCH_GRPC_HOST/PORT/WORKERS`, `INDEXER_BATCH_SIZE` (100), `INDEXER_IDLE_SECONDS`,
+`INDEXER_STALE_AFTER_SECONDS` (900), `INDEXER_HEARTBEAT_FILE`; PostgreSQL through
+`DATABASE_URL` (role `pgs_search`).
+
+## Development
 
 ```bash
-PYTHONPATH=search-engine/src search-engine/.venv/bin/python -m grpc_tools.protoc \
-  -Isearch-engine/proto \
-  --python_out=search-engine/src/pgs_search/grpc/generated \
-  --grpc_python_out=search-engine/src/pgs_search/grpc/generated \
-  search-engine/proto/search.proto
+python3.11 -m venv .venv && . .venv/bin/activate
+pip install --extra-index-url https://download.pytorch.org/whl/cpu "torch==2.14.1+cpu" \
+    -c constraints.txt -c ../database/constraints.txt -e ".[dev]" -e "../database[postgres]"
+python -m pytest -q                       # unit tests; the NLLB loader is mocked
+PYTHONPATH=src python -m pgs_search.grpc.server
+python scripts/test_grpc_client.py        # a sample query against localhost:50051
 ```
 
-If `search_pb2_grpc.py` generates `import search_pb2 as search__pb2`, change it to:
-
-```python
-from . import search_pb2 as search__pb2
-```
-
-Start the gRPC server:
+Regenerate the gRPC stubs after changing `proto/search.proto` (append-only field
+numbers; the API image copies the stubs):
 
 ```bash
-PYTHONPATH=search-engine/src python -m pgs_search.grpc.server
+python -m grpc_tools.protoc -I proto --python_out=src/pgs_search/grpc/generated \
+    --grpc_python_out=src/pgs_search/grpc/generated --pyi_out=src/pgs_search/grpc/generated \
+    proto/search.proto
+sed -i 's/^import search_pb2 as search__pb2/from . import search_pb2 as search__pb2/' \
+    src/pgs_search/grpc/generated/search_pb2_grpc.py
 ```
 
-Run the manual client:
+## Known limitations
 
-```bash
-PYTHONPATH=search-engine/src python search-engine/scripts/test_grpc_client.py
-```
-
-Example request:
-
-```python
-SearchRequest(
-    query="पोखरा बजेट",
-    province_code="P4",
-    district_code="D39",
-    language="ne",
-    page=1,
-    limit=10,
-)
-```
-
-`SearchPipelineAdapter` is a temporary integration stub. It returns one deterministic mock
-result until the BM25, vector search, embeddings, and LightGBM reranking pipeline is ready to
-be wired in.
+- One vector per page (mean of its first 16 windows); no passage-level retrieval yet.
+- `total_hits` counts ranked candidates (at most 500), not every match in the index;
+  dense retrieval always returns its nearest pages, so on a small corpus most queries
+  "hit" most pages.
+- The reranker is trained on a tiny placeholder set; `search_queries`/`search_clicks`/
+  `relevance_judgments` in PostgreSQL are where real training data accumulates.
+- Region browsing without a query (the map's "everything in district X") has no
+  endpoint yet; search with a geo filter does.
 
 ---
+
+# Original design specification (target, partly implemented)
 
 ## System Architecture & Technical Design Specification
 

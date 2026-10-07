@@ -2,11 +2,13 @@
 
 We design and manage the PostgreSQL database that the scraper, ETL, search engine and API all share.
 
-**Status: complete.** Every layer is built and migrated: Bronze, Silver, Gold, the reference
-gazetteer with map boundaries, and the ops tables. Each service has its own database role, a
-scheduled jobs runner loads the scraper's S3 output into Bronze and keeps Gold fresh, and CI
-checks every migration from an empty database. What remains is for the other teams to connect
-to it — see [§8](#8-connecting-the-other-teams).
+**Status: in production use by the pipeline.** Every layer is built and migrated: Bronze,
+Silver, Gold, the reference gazetteer with map boundaries, and the ops tables. The ETL worker
+saves every processed page here (Bronze + Silver, through `pgs_db.etl.save_transformed`), the
+search indexer copies Silver into OpenSearch and the search engine's dense retrieval reads
+`page_embeddings`; Airflow's `pgs_db_jobs_*` DAGs keep Gold fresh. Each service has its own
+database role, and `tests/test_pipeline_contract.py` runs the pipeline's calls under those
+roles. System context: [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
 
 ---
 
@@ -52,10 +54,11 @@ to refresh. The Gold *tables* are rebuilt by the jobs in [§6](#6-scheduled-jobs
 
 | Service | Role | Repository | Reads | Writes |
 |---|---|---|---|---|
-| Scraper (Go) | none (writes S3) | its S3 bucket, loaded by the `ingest` job (`pgs_db.ingest`) | — | — |
+| Scraper (Go) | none (writes S3) | its S3 bucket; the ETL saves each page's Document to Bronze | — | — |
 | Scraper, if it writes Postgres directly | `pgs_scraper` | `BronzeRepository` / [`scraper-db-contract.md`](docs/scraper-db-contract.md) | gazetteer, domains | Bronze, `domains` |
-| ETL (Spark) | `pgs_etl` | `SilverRepository`, `pgs_db.etl` / [`bronze-silver-contract.md`](docs/bronze-silver-contract.md) | Bronze, gazetteer (`ReferenceRepository.gazetteer`, `locate`) | Silver |
-| Search / indexer | `pgs_search` | `SearchRepository` | `search_documents`, `page_embeddings` | `pages` indexing state |
+| ETL worker (`ETL/spark/site_pipeline.py`) | `pgs_etl` | `pgs_db.etl.save_transformed(record, bronze_document=...)`, `OpsRepository.log_error` / [`bronze-silver-contract.md`](docs/bronze-silver-contract.md) | Bronze, reference | Bronze (`crawl_runs`, `crawled_documents`), Silver, unknown `domains`, `error_logs` |
+| Airflow `scraper_crawl_schedule` | `pgs_etl` | plain SQL | `domains` | — |
+| Search indexer / search engine | `pgs_search` | `SearchRepository` (`claim_for_indexing`, `vector_search`), `SilverRepository.mark_processed` | `search_documents`, `page_embeddings` | `pages` indexing state |
 | API | `pgs_api` | `OpsRepository`, `StatsRepository`, `QuarantineRepository`, `ReferenceRepository`, `SearchLogRepository` | everything | admin tables, domains, quick links, search log, labels |
 | Scheduled jobs | `pgs_jobs` | `python -m pgs_db.jobs` | everything but `admin_users` | Gold summaries, retention |
 | Dashboards | `pgs_readonly` | — | everything but `admin_users` | nothing |
@@ -134,16 +137,14 @@ which predates the 2017 restructuring (75 districts; only 544 of 766 names match
 
 ## 6. Scheduled jobs
 
-Local and dev crawls (`--storage=ndjson`, the scraper's default) load with
-`pgs_db.ingest.ingest_ndjson(Session, "documents.ndjson")`; production reads S3 through the
-`ingest` job below.
-
-`python -m pgs_db.jobs <job>` as the `pgs_jobs` role. Each job runs in its own transaction under
+Airflow runs them (`ETL/airflow/dags/pgs_db_maintenance_dag.py`: `pgs_db_jobs_frequent`
+every 10 min, `_hourly`, `_daily`) with the ETL image's `/opt/etl-venv` interpreter:
+`python -m pgs_db.jobs <job>` as the `pgs_jobs` role (`PGS_JOBS_DB_PASSWORD`). Each job runs in its own transaction under
 an advisory lock (an overlapping run skips), prints one JSON line, and exits non-zero on failure.
 
 | Job | Does | Schedule |
 |---|---|---|
-| `ingest` | load new runs and documents from the scraper's S3 bucket into Bronze | every 5 min |
+| `ingest` | load runs and documents from an S3 bucket into Bronze (a backfill tool now that the ETL writes Bronze; skipped unless `PGS_S3_BUCKET` is set) | not scheduled |
 | `stats` | rebuild `domain_stats`, `geo_content_stats` | every 15 min |
 | `scores` | rebuild `page_scores` (PageRank, freshness, quality) and domain authority | hourly |
 | `reference` | link domains to local bodies, fill missing municipality contacts | daily |
@@ -259,9 +260,15 @@ model disagrees with the migrated table.
 
 ## 8. Connecting the other teams
 
-The database no longer waits on anyone, and it already accepts what each branch sends
-today (checked against the branches on 2026-09-30, `tests/test_team_fit.py`). What is left
-is on each team's side:
+**Connected (2026-10-07):** the ETL saves every page with `save_transformed(...,
+bronze_document=...)` as `pgs_etl`; the search engine embeds queries with LaBSE and calls
+`SearchRepository.vector_search`; the search indexer feeds OpenSearch from
+`claim_for_indexing` / `mark_processed`; the API serves search, geography, login and the
+dashboard summary. Still open from the list below: the rule-based geo-tagging and the
+quarantine of infected pages in the ETL, the reranker's training data, image indexing, the
+remaining admin API endpoints and the UI's boundary files.
+
+The list as written on 2026-09-30 (checked against the branches then, `tests/test_team_fit.py`):
 
 - **Scraper** (`oxfordoli/api-s3-rework`, `moni/s3-storage-data-integrity`): it is moving to
   S3-only storage, and that already works with us: the `ingest` job reads its bucket layout

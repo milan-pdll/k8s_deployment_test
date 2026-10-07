@@ -15,11 +15,9 @@ RUN --mount=type=cache,target=/root/.npm \
 FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
-# NEXT_PUBLIC_* values are inlined into the browser bundle by `next build`, so they are
-# build arguments, not runtime settings. The browser calls the API from the user's
-# machine, so this is a host URL (http://localhost:8000), never a Docker service name.
-ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
+# No build-time API URL: the Next server calls the API at runtime (API_INTERNAL_URL,
+# src/lib/env.ts) and the browser reaches it on the same origin through nginx, so one
+# image works in every environment.
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build

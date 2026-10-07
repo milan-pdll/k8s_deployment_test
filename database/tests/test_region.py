@@ -47,7 +47,9 @@ class TestRegionalCard:
         lb = pokhara(ref)
         lb.phone, lb.email, lb.address = "+977-61-521105", "info@pokharamun.gov.np", "New Road"
         ref.add_region_link(KASKI, title_en="DAO Kaski", url="https://daokaski.moha.gov.np")
-        ref.add_region_link(POKHARA, title_en="Ward Directives", url="https://x.gov.np/w", position=2)
+        ref.add_region_link(
+            POKHARA, title_en="Ward Directives", url="https://x.gov.np/w", position=2
+        )
         ref.add_region_link(POKHARA, title_en="Budget", url="https://x.gov.np/b", position=1)
 
         card = RegionalCard.model_validate(ref.regional_card(POKHARA))

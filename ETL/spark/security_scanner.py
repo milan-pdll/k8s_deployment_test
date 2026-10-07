@@ -26,26 +26,43 @@ class ScanResult(TypedDict):
 
 # Extensions we treat as risky to auto-run/auto-open.
 SUSPICIOUS_EXTENSIONS = {
-    "exe", "bat", "cmd", "com", "scr",
-    "msi", "vbs", "js", "jar", "ps1", "sh",
+    "exe",
+    "bat",
+    "cmd",
+    "com",
+    "scr",
+    "msi",
+    "vbs",
+    "js",
+    "jar",
+    "ps1",
+    "sh",
 }
 
 # Extensions we expect to see routinely from the web crawler.
 EXPECTED_EXTENSIONS = {
-    "html", "htm", "pdf", "txt", "json",
-    "png", "jpg", "jpeg", "gif", "docx", "csv",
+    "html",
+    "htm",
+    "pdf",
+    "txt",
+    "json",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "docx",
+    "csv",
 }
 
 MAX_SAFE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 MAX_FILENAME_LENGTH = 100
 
-# ClamAV (clamd) connection settings. Overridable via environment variables
-# so the same code works whether the scanner runs directly on the host
-# (CLAMD_HOST=localhost) or inside a Docker container that needs to reach
-# the host (CLAMD_HOST=host.docker.internal).
+# ClamAV (clamd) connection: CLAMD_HOST/CLAMD_PORT (clamav:3310 in docker-compose; the
+# Spark workers inherit them from their container environment). The timeout bounds one
+# scan; a slow or unreachable daemon is an ERROR, never a pass.
 CLAMD_HOST = os.environ.get("CLAMD_HOST", "localhost")
 CLAMD_PORT = int(os.environ.get("CLAMD_PORT", "3310"))
-CLAMD_TIMEOUT_SECONDS = 15
+CLAMD_TIMEOUT_SECONDS = float(os.environ.get("CLAMD_TIMEOUT_SECONDS", "30"))
 
 
 def get_extension(filename: str) -> str:
@@ -151,25 +168,27 @@ def scan_with_clamav(content: bytes) -> dict[str, Any]:
     return {"status": "ERROR", "signature": None, "error": f"unexpected clamd status: {status!r}"}
 
 
-def inspect_file(path: str) -> dict[str, Any]:
-    """Return the intake-check contract consumed by transform_file().
+def ping_clamav() -> None:
+    """Raise if clamd cannot answer PING. The ETL checks this before a site's run, so
+    an outage retries the run instead of failing page after page."""
+    import clamd
 
-    Combines Layer 1 (basic checks) and Layer 2 (ClamAV content scan)
-    into one verdict: SAFE, SUSPICIOUS, INFECTED, or UNKNOWN.
-
-    accepted is True only when Layer 1 found nothing AND ClamAV actively
-    confirmed the content is clean. If ClamAV can't be reached, the file
-    is NOT accepted - an unreachable scanner is not the same as a clean
-    result.
-    """
-    from pathlib import Path
-
-    file_path = Path(path)
-    return inspect_bytes(file_path.name, file_path.read_bytes())
+    client = clamd.ClamdNetworkSocket(
+        host=CLAMD_HOST, port=CLAMD_PORT, timeout=CLAMD_TIMEOUT_SECONDS
+    )
+    if client.ping() != "PONG":
+        raise ConnectionError(f"clamd at {CLAMD_HOST}:{CLAMD_PORT} did not answer PING")
 
 
 def inspect_bytes(filename: str, content: bytes) -> dict[str, Any]:
-    """inspect_file() for content already in memory (an object read from S3)."""
+    """Both layers for content already in memory (an object read from S3).
+
+    ``accepted`` is True only when Layer 1 found nothing AND ClamAV actively confirmed
+    the content is clean. An empty or oversized payload is rejected by Layer 1 without
+    being streamed to ClamAV (clamav_status "SKIPPED"); an unreachable or failing
+    ClamAV gives clamav_status "ERROR", which the pipeline treats as "cannot scan, do
+    not process" (it retries the site), never as a pass.
+    """
     result = scan_file(filename, content)
 
     findings: list[str] = []
@@ -187,7 +206,10 @@ def inspect_bytes(filename: str, content: bytes) -> dict[str, Any]:
     if has_double_extension(filename):
         findings.append("multiple_extensions")
 
-    clamav_result = scan_with_clamav(content)
+    if "empty_file" in findings or "file_too_large" in findings:
+        clamav_result: dict[str, Any] = {"status": "SKIPPED", "signature": None}
+    else:
+        clamav_result = scan_with_clamav(content)
     clamav_status = clamav_result["status"]
 
     if clamav_status == "INFECTED":
@@ -212,23 +234,6 @@ def inspect_bytes(filename: str, content: bytes) -> dict[str, Any]:
         "findings": findings,
         "verdict": verdict,
         "clamav_status": clamav_status,
+        "clamav_signature": clamav_result.get("signature"),
+        "clamav_error": clamav_result.get("error"),
     }
-
-
-def scan_file_spark(spark: Any, filename: str, content: bytes) -> Any:
-    """Same as scan_file(), but wraps the Layer-1 result in a Spark
-    DataFrame - matches the pattern used by analyze_text() in
-    transform.py. Kept to Layer 1 only (no ClamAV) since this is used
-    for the Docker Spark smoke test, not the real ingestion path;
-    inspect_file() is the function the real pipeline calls."""
-    result = scan_file(filename, content)
-    spark_result: dict[str, Any] = dict(result)
-    spark_result["reasons"] = ", ".join(result["reasons"])  # flatten list for DataFrame
-    df = spark.createDataFrame([spark_result])
-    return df.select("filename", "extension", "size_bytes", "sha256", "verdict", "reasons")
-
-
-if __name__ == "__main__":
-    # Quick manual check, no Spark/Docker needed: python3 security_scanner.py
-    sample = scan_file("hello.txt", b"This is a normal file used to test the Spark Security Scanner.")
-    print(sample)

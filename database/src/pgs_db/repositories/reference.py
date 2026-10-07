@@ -39,7 +39,6 @@ from ..models import (
     RegionLink,
 )
 
-
 BOUNDARY_ATTRIBUTION = "Boundaries © Open Knowledge Nepal, CC BY 4.0"
 
 # LocalBodyType -> the Nepali level word the UI's old municipality layer used.
@@ -607,7 +606,8 @@ _PLACE_TYPE_WORDS = (
     "जिल्ला",
 )
 # Spaces and punctuation only: \W would also strip Devanagari vowel signs.
-_PLACE_SEPARATORS = re.compile(r"[\s\-_.,'’()/]+")
+# U+2019 (right single quotation mark) is a typographic apostrophe in place names.
+_PLACE_SEPARATORS = re.compile(r"[\s\-_.,'\u2019()/]+")
 
 
 def _place_key(name: str | None) -> str:
