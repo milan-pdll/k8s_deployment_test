@@ -36,11 +36,25 @@ export const PROVINCE_COLORS: Record<string, string> = {
   "Sudurpashchim Province": "#b3b3e6",
 };
 
-export const DEFAULT_PROVINCE_COLOR = "#cbd5e1";
+// The same hues, deeper, for dark mode: pastel fills glare on a dark page and
+// leave no contrast for light label text.
+export const PROVINCE_COLORS_DARK: Record<string, string> = {
+  "Koshi Province": "#9a5545",
+  "Madhesh Province": "#3f6b9e",
+  "Bagmati Province": "#3f8a5a",
+  "Gandaki Province": "#a86a2c",
+  "Lumbini Province": "#93507a",
+  "Karnali Province": "#8f8030",
+  "Sudurpashchim Province": "#5f5f9e",
+};
 
-export function getProvinceColor(provinceName: string | undefined): string {
-  if (!provinceName) return DEFAULT_PROVINCE_COLOR;
-  return PROVINCE_COLORS[provinceName] ?? DEFAULT_PROVINCE_COLOR;
+export const DEFAULT_PROVINCE_COLOR = "#cbd5e1";
+const DEFAULT_PROVINCE_COLOR_DARK = "#475569";
+
+export function getProvinceColor(provinceName: string | undefined, dark = false): string {
+  const fallback = dark ? DEFAULT_PROVINCE_COLOR_DARK : DEFAULT_PROVINCE_COLOR;
+  if (!provinceName) return fallback;
+  return (dark ? PROVINCE_COLORS_DARK : PROVINCE_COLORS)[provinceName] ?? fallback;
 }
 
 // All 77 districts, in their common English spellings (as on Wikipedia's list

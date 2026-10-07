@@ -263,6 +263,16 @@ export function GeoExplorer() {
     setFocusRequest({ seq: focusSeq.current, kind: "municipality", name, district });
   }
 
+  // The browser tab names the place you're looking at. (The server sets the
+  // first title; selections after that change the URL without a reload.)
+  useEffect(() => {
+    let place: string | null = null;
+    if (focusParam && districtParam) place = `${focusParam}, ${districtParam}`;
+    else if (selectedDistrict) place = `${titleCase(selectedDistrict)} district`;
+    else if (selectedProvince) place = selectedProvince;
+    document.title = place ? `${place} — Map of Nepal · PGS Search` : "Map of Nepal — PGS Search";
+  }, [focusParam, districtParam, selectedDistrict, selectedProvince]);
+
   function handleMapClick(lat: number, lng: number, district?: string) {
     if (!taggingMode) return;
     setPendingTag({ lat, lng, district });
@@ -339,6 +349,7 @@ export function GeoExplorer() {
         </div>
       </div>
       <MapSidebar
+        provinces={provinces}
         districts={districts}
         municipalities={municipalities}
         selectedProvince={selectedProvince}

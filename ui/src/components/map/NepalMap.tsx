@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, GeoJSON, Marker, Popup, useMap, useMapEvents } from "react-leaflet";
 import L, { type Layer, type LeafletMouseEvent, type PathOptions } from "leaflet";
 import type { Feature } from "geojson";
@@ -20,6 +20,9 @@ import {
 } from "@/lib/geo";
 import type { GeoTag } from "@/lib/types";
 import { NewsPopupContent } from "@/components/map/NewsPopupContent";
+import { MapLegend } from "@/components/map/MapLegend";
+import { useIsDark } from "@/components/map/useIsDark";
+import { MapBackgroundPicker, loadMapBackground, type MapBackground } from "@/components/map/MapBackgroundPicker";
 
 const TAG_ICON = L.divIcon({
   className: "",
@@ -51,15 +54,48 @@ const PENDING_ICON = L.divIcon({
 // needs to fit Nepal's full ~2:1 width. That full-country fit is also the
 // zoom-out limit — past it there's only blank canvas.
 const NEPAL_BOUNDS = L.latLngBounds([26.3, 80.0], [30.5, 88.3]);
-const NEPAL_MAX_BOUNDS: L.LatLngBoundsExpression = [
-  [25.9, 79.6],
-  [30.9, 88.7],
-];
+
+// How far past Nepal the map may be panned. Wide enough that a district on
+// the border (Darchula, Humla, Taplejung) can still be centred when zoomed in.
+// Padded equally in projected (Mercator) space, so its centre is exactly the
+// full-country view's centre: when the panel is bigger than these bounds,
+// Leaflet centres on them, and any other centre would make the map drift.
+const NEPAL_MAX_BOUNDS = padProjected(NEPAL_BOUNDS, 160_000);
+
+function padProjected(bounds: L.LatLngBounds, metres: number): L.LatLngBounds {
+  const crs = L.CRS.EPSG3857;
+  const sw = crs.project(bounds.getSouthWest());
+  const ne = crs.project(bounds.getNorthEast());
+  return L.latLngBounds(
+    crs.unproject(L.point(sw.x - metres, sw.y - metres)),
+    crs.unproject(L.point(ne.x + metres, ne.y + metres))
+  );
+}
+
+// Fly so that `bounds` fills the map (minus padding), landing on a view that
+// lies inside NEPAL_MAX_BOUNDS, so a border district isn't left looking at
+// empty space beyond the edge.
+function flyToFit(map: L.Map, bounds: L.LatLngBounds, padding: number, duration: number) {
+  const zoom = Math.min(map.getBoundsZoom(bounds, false, L.point(padding * 2, padding * 2)), map.getMaxZoom());
+  const center = map.project(bounds.getSouthWest(), zoom).add(map.project(bounds.getNorthEast(), zoom)).divideBy(2);
+  const limit = L.bounds(map.project(NEPAL_MAX_BOUNDS.getNorthWest(), zoom), map.project(NEPAL_MAX_BOUNDS.getSouthEast(), zoom));
+  const half = map.getSize().divideBy(2);
+  const clampAxis = (value: number, min: number, max: number, halfView: number) =>
+    max - min <= halfView * 2 ? (min + max) / 2 : Math.min(Math.max(value, min + halfView), max - halfView);
+  const target = L.point(
+    clampAxis(center.x, limit.min!.x, limit.max!.x, half.x),
+    clampAxis(center.y, limit.min!.y, limit.max!.y, half.y)
+  );
+  map.flyTo(map.unproject(target, zoom), zoom, { duration });
+}
 // Floor low enough that fitBounds can always show the whole country regardless
 // of panel aspect ratio; ceiling generous enough for the municipality-level
 // flyTo when focusing a search result.
 const MIN_ZOOM = 5;
 const MAX_ZOOM = 13;
+// Breathing room around the country at the full view. Every "show all of
+// Nepal" fit uses the same padding, so it lands exactly on the minimum zoom.
+const FIT_PADDING: L.PointExpression = [20, 20];
 
 export interface FocusRequest {
   seq: number;
@@ -68,13 +104,27 @@ export interface FocusRequest {
   district?: string;
 }
 
-function BoundsController() {
+function BoundsController({ keepViewRef }: { keepViewRef: React.RefObject<boolean> }) {
   const map = useMap();
 
   useEffect(() => {
     let fittedSize: L.Point | null = null;
 
     function apply() {
+      // While a place is selected, keep looking at it. Selecting one can itself
+      // resize the panel (a longer hint above the map wraps onto a second line,
+      // e.g. for Darchula), and refitting the country then would cancel the
+      // flight to the place halfway. Only the zoom-out limit follows the size.
+      if (fittedSize && keepViewRef.current) {
+        map.invalidateSize({ pan: false });
+        const size = map.getSize();
+        if (size.equals(fittedSize) || size.x === 0 || size.y === 0) return;
+        fittedSize = size;
+        const fitZoom = map.getBoundsZoom(NEPAL_BOUNDS, false, L.point(FIT_PADDING).multiplyBy(2));
+        map.setMinZoom(Math.min(fitZoom, map.getZoom()));
+        return;
+      }
+
       // Inside a flex layout the container can report a 0/stale, pre-layout size
       // on early ticks; invalidateSize() forces Leaflet to re-measure before we
       // fit. Re-fitting on every resize (sidebar toggle, window resize) keeps the
@@ -92,7 +142,7 @@ function BoundsController() {
         // Drop the floor first: a smaller panel needs a lower fit zoom than the
         // previous floor, and fitBounds would otherwise clamp to it and clip.
         map.setMinZoom(MIN_ZOOM);
-        map.fitBounds(NEPAL_BOUNDS, { animate: false, padding: [8, 8] });
+        map.fitBounds(NEPAL_BOUNDS, { animate: false, padding: FIT_PADDING });
         map.setMinZoom(map.getZoom());
       }
     }
@@ -102,7 +152,7 @@ function BoundsController() {
     const observer = new ResizeObserver(apply);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [map]);
+  }, [map, keepViewRef]);
 
   return null;
 }
@@ -113,6 +163,17 @@ function BoundsController() {
 // slightly shifted, clipping one edge of the country — so recenter there.
 function PanWhenZoomed() {
   const map = useMap();
+
+  // Dragging stops at NEPAL_MAX_BOUNDS (Leaflet's drag handler reads these
+  // options). They're set here rather than as MapContainer props on purpose:
+  // the maxBounds prop also re-centres the map after every move, and that
+  // cancelled flights to border districts and fought the news popup's own
+  // panning (the map shook back and forth on Darchula). Flights land inside
+  // the bounds by themselves (flyToFit).
+  useEffect(() => {
+    L.Util.setOptions(map, { maxBounds: NEPAL_MAX_BOUNDS, maxBoundsViscosity: 1 });
+  }, [map]);
+
   useMapEvents({
     zoomend() {
       if (map.getZoom() > map.getMinZoom() + 0.01) {
@@ -165,10 +226,10 @@ function ZoomControls({ map }: { map: L.Map }) {
   const atMin = zoomState.zoom <= zoomState.min + 0.01;
   const atMax = zoomState.zoom >= zoomState.max - 0.01;
   const buttonClass =
-    "flex h-8 w-8 items-center justify-center text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent";
+    "flex h-8 w-8 items-center justify-center text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent dark:text-slate-200 dark:hover:bg-slate-800 dark:disabled:text-slate-600";
 
   return (
-    <div data-map-overlay className="absolute right-3 top-3 z-[1000] flex flex-col divide-y divide-slate-200 overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+    <div data-map-overlay className="absolute right-3 top-3 z-[1000] flex flex-col divide-y divide-slate-200 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm dark:divide-slate-700 dark:border-slate-700 dark:bg-slate-900">
       <button type="button" aria-label="Zoom in" title="Zoom in" disabled={atMax} onClick={() => map.zoomIn(1)} className={buttonClass}>
         <Plus className="h-4 w-4" />
       </button>
@@ -180,7 +241,10 @@ function ZoomControls({ map }: { map: L.Map }) {
         aria-label="Show all of Nepal"
         title="Show all of Nepal"
         disabled={atMin}
-        onClick={() => map.flyToBounds(NEPAL_BOUNDS, { padding: [8, 8], duration: 0.6 })}
+        onClick={() => {
+          map.closePopup();
+          map.flyToBounds(NEPAL_BOUNDS, { padding: FIT_PADDING, duration: 0.6 });
+        }}
         className={buttonClass}
       >
         <House className="h-4 w-4" />
@@ -205,9 +269,12 @@ function FocusHandler({
 
   useEffect(() => {
     if (!focusRequest) return;
+    // An open popup belongs to the place we're leaving, and its auto-panning
+    // would knock the flight off course.
+    map.closePopup();
 
     if (focusRequest.kind === "country") {
-      map.flyToBounds(NEPAL_BOUNDS, { padding: [8, 8], duration: 0.8 });
+      map.flyToBounds(NEPAL_BOUNDS, { padding: FIT_PADDING, duration: 0.8 });
       return;
     }
 
@@ -216,7 +283,7 @@ function FocusHandler({
         (f) => getProvinceName(f).toLowerCase() === focusRequest.name.toLowerCase()
       );
       if (feature) {
-        map.flyToBounds(L.geoJSON(feature).getBounds(), { padding: [30, 30], duration: 0.8 });
+        flyToFit(map, L.geoJSON(feature).getBounds(), 30, 0.8);
       }
       return;
     }
@@ -226,7 +293,7 @@ function FocusHandler({
         (f) => f.properties.DISTRICT.toLowerCase() === focusRequest.name.toLowerCase()
       );
       if (feature) {
-        map.flyToBounds(L.geoJSON(feature).getBounds(), { padding: [40, 40], duration: 0.8 });
+        flyToFit(map, L.geoJSON(feature).getBounds(), 40, 0.8);
       }
       return;
     }
@@ -238,7 +305,7 @@ function FocusHandler({
           f.properties.DISTRICT.toLowerCase() === (focusRequest.district ?? "").toLowerCase()
       );
       if (feature) {
-        map.flyToBounds(L.geoJSON(feature).getBounds(), { padding: [60, 60], duration: 0.8 });
+        flyToFit(map, L.geoJSON(feature).getBounds(), 60, 0.8);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -253,6 +320,7 @@ export function NepalMap({
   municipalities,
   selectedProvince,
   selectedDistrict,
+  onSelectProvince,
   onSelectDistrict,
   focusRequest,
   taggingMode,
@@ -265,9 +333,7 @@ export function NepalMap({
   districts: DistrictCollection | null;
   municipalities: MunicipalityCollection | null;
   selectedProvince: string | null;
-  // Districts now cover the whole map, so selecting one (which also implies its
-  // province, handled in GeoExplorer) covers what a province-only click used to
-  // do. Kept in the prop contract since GeoExplorer still passes it through.
+  /** Used by the map key, whose provinces double as a filter. */
   onSelectProvince: (name: string) => void;
   selectedDistrict: string | null;
   onSelectDistrict: (name: string) => void;
@@ -278,9 +344,53 @@ export function NepalMap({
   tags: GeoTag[];
   onRemoveTag: (id: string) => void;
 }) {
-  const [newsTarget, setNewsTarget] = useState<{ name: string; lat: number; lng: number } | null>(null);
+  const [newsTarget, setNewsTarget] = useState<NewsTarget | null>(null);
+  // Stable values for the popup's props: react-leaflet closes and re-opens a
+  // popup whenever `position` changes identity, and this component re-renders
+  // on every hover, so an inline [lat, lng] made the popup flicker and re-pan
+  // the map as the mouse moved.
+  const newsPosition = useMemo<L.LatLngTuple | null>(
+    () => (newsTarget ? [newsTarget.lat, newsTarget.lng] : null),
+    [newsTarget]
+  );
+  const newsPopupHandlers = useMemo(() => ({ remove: () => setNewsTarget(null) }), []);
   const [map, setMap] = useState<L.Map | null>(null);
+
+  // Selecting a district flies the map to it. Opening its news popup at the
+  // same time breaks that for districts near the edge (Darchula, Humla,
+  // Taplejung…): the popup doesn't fit, Leaflet pans to make room, and that pan
+  // cancels the flight halfway. So wait until the map has landed, when the
+  // district is centred and the popup fits.
+  const pendingNewsRef = useRef<NewsTarget | null>(null);
+  function openNewsAfterFlight(target: NewsTarget) {
+    setNewsTarget(null);
+    pendingNewsRef.current = target;
+    const open = () => {
+      // A newer click (another district) replaces this one.
+      if (pendingNewsRef.current !== target) return;
+      pendingNewsRef.current = null;
+      setNewsTarget(target);
+    };
+    // zoomend, not moveend: a flight always ends with zoomend, while moveend
+    // also fires mid-flight when the panel resizes (invalidateSize).
+    map?.once("zoomend", open);
+    // Re-clicking the selected district doesn't move the map, so no zoomend.
+    window.setTimeout(open, 1500);
+  }
   const [hovered, setHovered] = useState<HoverTarget | null>(null);
+  // The map's own colors follow the chosen background: "auto" follows the
+  // site's light/dark mode, "white" and "dark" force one look either way.
+  const systemDark = useIsDark();
+  const [background, setBackground] = useState<MapBackground>(loadMapBackground);
+  const dark = background === "auto" ? systemDark : background === "dark";
+  const palette = dark ? DARK_PALETTE : LIGHT_PALETTE;
+  // Read by BoundsController on resize: keep the view while a place is selected.
+  // A layout effect, so it's set before the resize that the selection itself
+  // can cause is observed.
+  const keepViewRef = useRef(false);
+  useLayoutEffect(() => {
+    keepViewRef.current = Boolean(selectedProvince || selectedDistrict);
+  }, [selectedProvince, selectedDistrict]);
   const districtLayersRef = useRef(new Map<string, L.Polygon>());
   // Keyed by N_ID; only the first shape of a multi-part municipality gets a label.
   const municipalityLayersRef = useRef(new Map<string, L.Polygon>());
@@ -398,7 +508,17 @@ export function NepalMap({
       map.off("zoomend", updateLabelVisibility);
     };
     // municipalities: their labels need placing once the background load lands.
-  }, [map, updateLabelVisibility, districts, municipalities, selectedProvince]);
+    // dark: switching colors redraws every shape, with fresh (hidden) labels.
+  }, [map, updateLabelVisibility, districts, municipalities, selectedProvince, dark]);
+
+  // Draw the selected district above its neighbours so its border and glow
+  // aren't covered by theirs. Not once its municipalities are showing: they
+  // are drawn on top of it and must stay there.
+  const showingMunicipalities = Boolean(municipalities && selectedDistrict);
+  useEffect(() => {
+    if (!selectedDistrict || showingMunicipalities) return;
+    districtLayersRef.current.get(selectedDistrict)?.bringToFront();
+  }, [selectedDistrict, showingMunicipalities, districts, dark]);
 
   // onEachFeature only runs once per layer, so click handlers close over stale props.
   // Read tagging mode from a ref that's always current instead of the closed-over value.
@@ -431,15 +551,23 @@ export function NepalMap({
       const name = (feature as DistrictFeature | undefined)?.properties.DISTRICT ?? "";
       const province = getDistrictProvince(name);
       const isSelectedDistrict = name.toLowerCase() === selectedDistrict?.toLowerCase();
-      const isDimmed = Boolean(selectedProvince) && province !== selectedProvince;
+      const inSelectedProvince = !selectedProvince || province === selectedProvince;
+      // Three steps of emphasis, so the eye goes straight to the selection:
+      // the selected district, the rest of its province, then everything else.
+      let fillOpacity = 0.85;
+      if (!inSelectedProvince) fillOpacity = palette.dimmedOpacity;
+      else if (selectedDistrict && !isSelectedDistrict) fillOpacity = 0.55;
+      if (isSelectedDistrict) fillOpacity = 1;
       return {
-        color: isSelectedDistrict ? "#1d4ed8" : "#ffffff",
+        color: isSelectedDistrict ? palette.selected : palette.border,
         weight: isSelectedDistrict ? 2.5 : 1,
-        fillColor: getProvinceColor(province),
-        fillOpacity: isDimmed ? 0.2 : isSelectedDistrict ? 1 : 0.82,
+        fillColor: getProvinceColor(province, dark),
+        fillOpacity,
+        // A soft glow around the selected district (see .map-selected-glow).
+        className: isSelectedDistrict ? "map-selected-glow" : undefined,
       };
     },
-    [selectedDistrict, selectedProvince]
+    [selectedDistrict, selectedProvince, palette, dark]
   );
   // Layer event handlers are bound once per layer, so they read the current
   // style function through a ref rather than the one from when they were bound.
@@ -468,14 +596,14 @@ export function NepalMap({
       }
       onSelectDistrict(props.DISTRICT);
       const center = (layer as L.Polygon).getBounds().getCenter();
-      setNewsTarget({ name: props.DISTRICT, lat: center.lat, lng: center.lng });
+      openNewsAfterFlight({ name: props.DISTRICT, lat: center.lat, lng: center.lng });
     });
     layer.on("mouseover", () => {
       const base = districtStyleRef.current(feature);
       path.setStyle({
-        color: base.color === "#ffffff" ? "#0f172a" : base.color,
+        color: base.color === palette.border ? palette.hover : base.color,
         weight: 2.5,
-        fillOpacity: base.fillOpacity === 0.2 ? 0.45 : 1,
+        fillOpacity: Math.min(1, (base.fillOpacity ?? 0.85) + 0.3),
       });
       setHovered({ kind: "district", name: props.DISTRICT });
     });
@@ -494,13 +622,13 @@ export function NepalMap({
       const isSelected = name?.toLowerCase() === selectedProvince?.toLowerCase();
       return {
         fill: false,
-        color: isSelected ? "#1d4ed8" : "#334155",
+        color: isSelected ? palette.selected : palette.provinceLine,
         weight: isSelected ? 3 : 1.75,
-        opacity: isSelected ? 1 : 0.75,
+        opacity: isSelected ? 1 : palette.provinceLineOpacity,
         interactive: false,
       };
     },
-    [selectedProvince]
+    [selectedProvince, palette]
   );
 
   // Municipalities keep their district's province color, split by white
@@ -509,12 +637,12 @@ export function NepalMap({
   const municipalityStyle = useCallback((feature?: Feature): PathOptions => {
     const district = (feature as MunicipalityFeature | undefined)?.properties.DISTRICT ?? "";
     return {
-      color: "#ffffff",
+      color: palette.border,
       weight: 1,
-      fillColor: getProvinceColor(getDistrictProvince(district)),
+      fillColor: getProvinceColor(getDistrictProvince(district), dark),
       fillOpacity: 1,
     };
-  }, []);
+  }, [palette, dark]);
 
   // The selected district's blue outline, redrawn above the municipalities
   // (whose white borders would otherwise cover it).
@@ -552,11 +680,11 @@ export function NepalMap({
       });
     }
     layer.on("mouseover", () => {
-      path.setStyle({ color: "#0f172a", weight: 2 });
+      path.setStyle({ color: palette.hover, weight: 2 });
       setHovered({ kind: "municipality", name: props.NAME, district: props.DISTRICT, level: props.LEVEL });
     });
     layer.on("mouseout", () => {
-      path.setStyle({ color: "#ffffff", weight: 1 });
+      path.setStyle({ color: palette.border, weight: 1 });
       setHovered((current) => (current?.kind === "municipality" && current.name === props.NAME ? null : current));
     });
     layer.on("click", (e: LeafletMouseEvent) => {
@@ -571,17 +699,15 @@ export function NepalMap({
   }
 
   return (
-    // NEPAL_BOUNDS is ~1.73:1 in Leaflet's Mercator projection; a stretched
-    // full-height panel just letterboxes it in white space. Size the Leaflet box
-    // to just over that ratio and fitBounds then fills it nearly edge to edge.
-    <div className="flex h-full w-full items-center justify-center p-2 sm:p-4">
+    // The map fills its whole panel on a soft backdrop, like a map app, rather
+    // than sitting in a card with empty space around it. fitBounds centres the
+    // country whatever the panel's shape.
+    <div className="h-full w-full">
       <div
-        // Phones fill the panel instead: the country is width-bound either way,
-        // and the extra card height gives news popups room to open.
-        className={`relative h-full w-full overflow-hidden rounded-xl border bg-white shadow-sm sm:aspect-[7/4] sm:h-auto sm:max-h-full ${
+        className={`relative h-full w-full overflow-hidden ${BACKGROUND_CLASSES[background]} ${dark ? "map-canvas-dark" : ""} ${
           taggingMode
-            ? "border-amber-400 ring-2 ring-amber-300/60 [&_.leaflet-container]:!cursor-crosshair [&_.leaflet-interactive]:!cursor-crosshair"
-            : "border-slate-200 dark:border-slate-700"
+            ? "ring-2 ring-inset ring-amber-400 [&_.leaflet-container]:!cursor-crosshair [&_.leaflet-interactive]:!cursor-crosshair"
+            : ""
         }`}
         role="region"
         aria-label="Map of Nepal by district"
@@ -602,8 +728,6 @@ export function NepalMap({
         // Whole-number zoom snapping makes fitBounds round down to the next level
         // that fits, which can leave the country at roughly half the panel size.
         zoomSnap={0}
-        maxBounds={NEPAL_MAX_BOUNDS}
-        maxBoundsViscosity={1.0}
         zoomControl={false}
         dragging={false}
         scrollWheelZoom
@@ -612,14 +736,14 @@ export function NepalMap({
         boxZoom={false}
         keyboard={false}
         attributionControl={false}
-        className="h-full w-full bg-white"
+        className="h-full w-full"
       >
-        <BoundsController />
+        <BoundsController keepViewRef={keepViewRef} />
         <PanWhenZoomed />
 
         {districts && (
           <GeoJSON
-            key={`districts-${selectedProvince ?? "none"}-${selectedDistrict ?? "none"}`}
+            key={`districts-${selectedProvince ?? "none"}-${selectedDistrict ?? "none"}-${dark}`}
             data={districts}
             style={districtStyle}
             onEachFeature={onEachDistrict}
@@ -628,7 +752,7 @@ export function NepalMap({
 
         {provinces && (
           <GeoJSON
-            key={`province-outline-${selectedProvince ?? "none"}`}
+            key={`province-outline-${selectedProvince ?? "none"}-${dark}`}
             data={provinces}
             style={provinceBoundaryStyle}
           />
@@ -636,7 +760,7 @@ export function NepalMap({
 
         {filteredMunicipalities && (
           <GeoJSON
-            key={`municipalities-${selectedDistrict}`}
+            key={`municipalities-${selectedDistrict}-${dark}`}
             data={filteredMunicipalities}
             style={municipalityStyle}
             onEachFeature={onEachMunicipality}
@@ -645,9 +769,9 @@ export function NepalMap({
 
         {filteredMunicipalities && selectedDistrictFeature && (
           <GeoJSON
-            key={`selected-outline-${selectedDistrict}`}
+            key={`selected-outline-${selectedDistrict}-${dark}`}
             data={selectedDistrictFeature}
-            style={{ fill: false, color: "#1d4ed8", weight: 3, interactive: false }}
+            style={{ fill: false, color: palette.selected, weight: 3, interactive: false, className: "map-selected-glow" }}
           />
         )}
 
@@ -656,14 +780,14 @@ export function NepalMap({
             <Popup>
               <div className="min-w-[160px] text-sm">
                 <p className="font-semibold">{tag.label}</p>
-                {tag.note && <p className="mt-1 text-slate-600">{tag.note}</p>}
+                {tag.note && <p className="mt-1 text-slate-600 dark:text-slate-300">{tag.note}</p>}
                 {tag.district && (
-                  <p className="mt-1 text-xs text-slate-500">{titleCase(tag.district)} district</p>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{titleCase(tag.district)} district</p>
                 )}
                 <button
                   type="button"
                   onClick={() => onRemoveTag(tag.id)}
-                  className="mt-2 text-xs font-medium text-rose-600 hover:underline"
+                  className="mt-2 text-xs font-medium text-rose-600 hover:underline dark:text-rose-400"
                 >
                   Delete pin
                 </button>
@@ -676,15 +800,15 @@ export function NepalMap({
           <Marker position={[pendingTag.lat, pendingTag.lng]} icon={PENDING_ICON} interactive={false} />
         )}
 
-        {newsTarget && (
+        {newsTarget && newsPosition && (
           <Popup
             key={`${newsTarget.name}-${newsTarget.lat}-${newsTarget.lng}`}
-            position={[newsTarget.lat, newsTarget.lng]}
-            eventHandlers={{ remove: () => setNewsTarget(null) }}
+            position={newsPosition}
+            eventHandlers={newsPopupHandlers}
           >
-            {/* The popup opens while a flyTo recenters the clicked place, which
-                overrides Leaflet's autoPan — so cap the list to the space above
-                center (minus header, padding and tip). */}
+            {/* The popup opens over the centre of the map (where the flight
+                landed), so cap the list to the space above centre (minus
+                header, padding and tip). */}
             <NewsPopupContent
               place={titleCase(newsTarget.name)}
               listMaxHeight={map ? Math.max(90, map.getSize().y / 2 - 110) : undefined}
@@ -700,14 +824,25 @@ export function NepalMap({
         />
       </MapContainer>
       {map && <ZoomControls map={map} />}
-      {hovered && <HoverCard target={hovered} taggingMode={taggingMode} />}
+      {map && <MapBackgroundPicker value={background} onChange={setBackground} />}
+      {map && (
+        <MapLegend
+          dark={dark}
+          selectedProvince={selectedProvince}
+          onSelectProvince={onSelectProvince}
+          showPins={tags.length > 0 || Boolean(pendingTag)}
+          collapsed={Boolean(selectedProvince || selectedDistrict)}
+          onResize={updateLabelVisibility}
+        />
+      )}
+      {hovered && <HoverCard target={hovered} taggingMode={taggingMode} dark={dark} />}
       {/* Required by the boundary data's CC BY 4.0 license. */}
       <a
         href="https://localboundries.oknp.org/"
         data-map-overlay
         target="_blank"
         rel="noopener noreferrer"
-        className="absolute bottom-1 right-2 z-[1000] rounded bg-white/80 px-1.5 py-0.5 text-[10px] text-slate-500 hover:text-slate-800 hover:underline"
+        className="absolute bottom-1 right-2 z-[1000] rounded bg-white/80 px-1.5 py-0.5 text-[10px] text-slate-500 hover:text-slate-800 hover:underline dark:bg-slate-900/80 dark:text-slate-400 dark:hover:text-slate-100"
       >
         Boundaries: Open Knowledge Nepal, CC BY 4.0
       </a>
@@ -715,7 +850,12 @@ export function NepalMap({
 
       <style jsx global>{`
         .leaflet-container {
-          background: #ffffff !important;
+          background: transparent !important;
+          font-family: inherit;
+        }
+
+        .map-selected-glow {
+          filter: drop-shadow(0 0 3px rgba(37, 99, 235, 0.55)) drop-shadow(0 0 10px rgba(37, 99, 235, 0.35));
         }
 
         .district-label {
@@ -752,10 +892,71 @@ export function NepalMap({
           font-weight: 500;
           color: #334155;
         }
+
+        .leaflet-popup-content-wrapper {
+          border-radius: 12px;
+        }
+
+        /* Map labels and glow follow the map's background (set on the
+           wrapper), not the page theme: a white map keeps dark labels even
+           in dark mode. */
+        .map-canvas-dark .district-label {
+          color: #f1f5f9;
+          text-shadow:
+            -1px -1px 0 #0f172a,
+            1px -1px 0 #0f172a,
+            -1px 1px 0 #0f172a,
+            1px 1px 0 #0f172a,
+            0 0 3px #0f172a;
+        }
+        .map-canvas-dark .municipality-label {
+          color: #cbd5e1;
+        }
+        .map-canvas-dark .map-selected-glow {
+          filter: drop-shadow(0 0 3px rgba(96, 165, 250, 0.7)) drop-shadow(0 0 12px rgba(96, 165, 250, 0.4));
+        }
+
+        /* Popups are page UI, so they follow the page theme. */
+        @media (prefers-color-scheme: dark) {
+          .leaflet-popup-content-wrapper,
+          .leaflet-popup-tip {
+            background: #1e293b;
+            color: #e2e8f0;
+          }
+          .leaflet-container a.leaflet-popup-close-button {
+            color: #94a3b8;
+          }
+        }
       `}</style>
     </div>
   );
 }
+
+const BACKGROUND_CLASSES: Record<MapBackground, string> = {
+  auto: "bg-[radial-gradient(ellipse_at_center,#f8fafc_0%,#e2e8f0_100%)] dark:bg-[radial-gradient(ellipse_at_center,#1e293b_0%,#0b1120_100%)]",
+  white: "bg-white",
+  dark: "bg-[radial-gradient(ellipse_at_center,#1e293b_0%,#0b1120_100%)]",
+};
+
+// Map colors that can't come from CSS classes (Leaflet sets them on the SVG).
+const LIGHT_PALETTE = {
+  border: "#ffffff",
+  hover: "#0f172a",
+  selected: "#1d4ed8",
+  provinceLine: "#334155",
+  provinceLineOpacity: 0.75,
+  dimmedOpacity: 0.18,
+};
+const DARK_PALETTE = {
+  border: "#0f172a",
+  hover: "#f8fafc",
+  selected: "#60a5fa",
+  provinceLine: "#cbd5e1",
+  provinceLineOpacity: 0.55,
+  dimmedOpacity: 0.25,
+};
+
+type NewsTarget = { name: string; lat: number; lng: number };
 
 type HoverTarget =
   | { kind: "district"; name: string }
@@ -763,28 +964,29 @@ type HoverTarget =
 
 // Names the place under the pointer (even when its map label is hidden for
 // space), shows where it belongs, and says what a click will do. Tucked in the
-// bottom-left corner, which Nepal's shape leaves empty. Hidden on touch
+// top-right corner beside the zoom buttons, which Nepal's shape leaves empty
+// (the map key has the bottom-left one). Hidden on touch
 // screens: a tap fires mouseover but never mouseout, so it would stick.
-function HoverCard({ target, taggingMode }: { target: HoverTarget; taggingMode: boolean }) {
+function HoverCard({ target, taggingMode, dark }: { target: HoverTarget; taggingMode: boolean; dark: boolean }) {
   const district = target.kind === "district" ? target.name : target.district;
   const province = getDistrictProvince(district);
   return (
-    <div className="pointer-events-none absolute bottom-3 left-3 z-[1000] hidden max-w-[70%] rounded-lg border border-slate-200 bg-white/95 px-3 py-2 shadow-md [@media(hover:hover)]:block">
-      <p className="text-sm font-semibold text-slate-900">
+    <div className="pointer-events-none absolute right-14 top-3 z-[1000] hidden max-w-[60%] rounded-lg border border-slate-200 bg-white/95 px-3 py-2 shadow-md backdrop-blur dark:border-slate-700 dark:bg-slate-900/90 [@media(hover:hover)]:block">
+      <p className="text-sm font-semibold text-slate-900 dark:text-slate-50">
         {target.kind === "district" ? `${titleCase(target.name)} district` : target.name}
       </p>
       {target.kind === "municipality" && (
-        <p className="mt-0.5 text-xs text-slate-600">
+        <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
           {getLevelLabel(target.level)} · {titleCase(target.district)} district
         </p>
       )}
       {target.kind === "district" && province && (
-        <p className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-600">
-          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: getProvinceColor(province) }} />
+        <p className="mt-0.5 flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400">
+          <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: getProvinceColor(province, dark) }} />
           {province}
         </p>
       )}
-      <p className="mt-1 flex items-center gap-1 text-xs font-medium text-blue-700">
+      <p className="mt-1 flex items-center gap-1 text-xs font-medium text-blue-700 dark:text-blue-400">
         <MousePointerClick className="h-3.5 w-3.5" />
         {taggingMode ? "Click to drop your pin here" : "Click to see local news"}
       </p>
