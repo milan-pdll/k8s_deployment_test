@@ -77,6 +77,18 @@ spec:
               valueFrom:
                 configMapKeyRef: { name: pgs-config, key: EMBEDDING_DIMENSIONS }
             - { name: TRANSLATION_MODEL_REVISION, value: f8d333a098d19b4fd9a8b18f94170487ad3f821d }
+            - name: TRANSLATION_BACKEND
+              valueFrom:
+                configMapKeyRef: { name: pgs-config, key: TRANSLATION_BACKEND }
+            - name: TRANSLATION_API_BASE_URL
+              valueFrom:
+                configMapKeyRef: { name: pgs-config, key: TRANSLATION_API_BASE_URL }
+            - name: TRANSLATION_API_MODEL
+              valueFrom:
+                configMapKeyRef: { name: pgs-config, key: TRANSLATION_API_MODEL }
+            - name: TRANSLATION_API_KEY
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: TRANSLATION_API_KEY, optional: true }
             # Dense retrieval through pgs_db (page_embeddings, pgvector) as pgs_search.
             - name: POSTGRES_DB
               valueFrom:

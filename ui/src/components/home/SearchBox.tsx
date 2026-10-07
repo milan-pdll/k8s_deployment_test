@@ -1,18 +1,18 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Mic, Search, X } from "lucide-react";
 import { cn } from "@/lib/cn";
 
-const SUGGESTIONS = [
-  "Kathmandu district boundary",
-  "Pokhara municipality ward map",
-  "Chitwan geo tagging",
-  "PGS dashboard metrics",
-  "municipality index nepal",
-  "Bhaktapur survey records",
-];
+interface Suggestion {
+  id: string;
+  title: string;
+  url: string;
+  domain: string;
+}
+
+const SUGGEST_DELAY_MS = 250;
 
 export function SearchBox({
   autoFocus = true,
@@ -27,9 +27,30 @@ export function SearchBox({
   const [value, setValue] = useState(initialValue);
   const [focused, setFocused] = useState(false);
 
-  const suggestions = useMemo(() => {
-    if (!value.trim()) return [];
-    return SUGGESTIONS.filter((s) => s.toLowerCase().includes(value.toLowerCase())).slice(0, 5);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+
+  // Live pages for what is typed so far: debounced, and a newer keystroke cancels the
+  // request in flight so a slow answer never replaces a fresher one.
+  useEffect(() => {
+    const q = value.trim();
+    if (!q) {
+      setSuggestions([]);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`, { signal: controller.signal });
+        const data: { results?: Suggestion[] } = response.ok ? await response.json() : {};
+        setSuggestions(data.results ?? []);
+      } catch {
+        // Aborted by a newer keystroke, or the API is down: keep what is shown.
+      }
+    }, SUGGEST_DELAY_MS);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
   }, [value]);
 
   function submit(query: string) {
@@ -77,16 +98,20 @@ export function SearchBox({
       {focused && suggestions.length > 0 && (
         <ul className="absolute inset-x-0 top-full z-20 mt-1 overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 shadow-lg dark:border-slate-700 dark:bg-slate-800">
           {suggestions.map((s) => (
-            <li key={s}>
-              <button
-                type="button"
+            <li key={s.id}>
+              <a
+                href={s.url}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => submit(s)}
                 className="flex w-full items-center gap-3 px-5 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-700"
               >
-                <Search className="h-3.5 w-3.5 text-slate-400" />
-                {s}
-              </button>
+                <Search className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{s.title || s.url}</span>
+                  <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{s.domain}</span>
+                </span>
+              </a>
             </li>
           ))}
         </ul>
