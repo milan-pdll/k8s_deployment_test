@@ -8,6 +8,7 @@ PostgreSQL is reached through pgs_db, which reads DATABASE_URL (role pgs_search)
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -38,8 +39,20 @@ class Settings(BaseSettings):
 
     # --- Query translation (NLLB), used for cross-language lexical expansion ----------
     translation_enabled: bool = True
+    # "local" runs NLLB in this process; "remote" calls an OpenAI-compatible chat API
+    # (OpenRouter ":free" models, Gemini's OpenAI endpoint, ...), so the server loads no model.
+    translation_backend: Literal["local", "remote"] = "local"
+    translation_api_base_url: str = "https://openrouter.ai/api/v1"
+    translation_api_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    translation_api_key: str | None = None
+    translation_api_timeout_seconds: float = Field(default=3.0, gt=0)
     translation_model_name: str = "facebook/nllb-200-distilled-600M"
     translation_model_revision: str | None = None
+    # int8-quantize the NLLB model (faster, smaller; slightly lower quality). For laptops.
+    translation_quantize: bool = False
+    # How long a search waits for the translated variant once the other work is done.
+    # Slower translations finish in the background (and are cached for the next search).
+    translation_wait_seconds: float = Field(default=0.3, ge=0)
     # Longer queries are not translated: their cost grows with length, and LaBSE's
     # cross-lingual vectors already cover them.
     translation_max_query_chars: int = Field(default=200, gt=0)

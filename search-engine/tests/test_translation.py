@@ -208,3 +208,50 @@ def test_long_or_disabled_translation_is_skipped(fake_nllb, monkeypatch):
 def test_generation_is_bounded(fake_nllb):
     translate_to_nepali("Budget notice")
     assert fake_nllb.model.generate_kwargs["max_new_tokens"] == translation.MAX_NEW_TOKENS
+
+
+class _FakeResponse:
+    def __init__(self, content: str) -> None:
+        self._body = ('{"choices": [{"message": {"content": %s}}]}' % __import__("json").dumps(content)).encode()
+
+    def read(self, *_a):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+
+def test_remote_backend_calls_chat_api_and_skips_local_model(monkeypatch):
+    monkeypatch.setattr(settings, "translation_backend", "remote")
+    monkeypatch.setattr(settings, "translation_api_key", "k")
+    translation._translate.cache_clear()
+    seen = {}
+
+    def fake_urlopen(request, timeout):
+        seen["url"] = request.full_url
+        seen["auth"] = request.get_header("Authorization")
+        seen["body"] = __import__("json").loads(request.data)
+        return _FakeResponse('"काठमाडौं"\n'.strip())
+
+    with (
+        patch.object(translation.urllib.request, "urlopen", fake_urlopen),
+        patch.object(translation, "get_model_and_tokenizer") as load,
+    ):
+        assert translate_to_nepali("Kathmandu") == "काठमाडौं"
+    load.assert_not_called()
+    assert seen["url"].endswith("/chat/completions")
+    assert seen["auth"] == "Bearer k"
+    assert seen["body"]["messages"][1]["content"] == "Kathmandu"
+    translation._translate.cache_clear()
+
+
+def test_remote_backend_without_key_raises(monkeypatch):
+    monkeypatch.setattr(settings, "translation_backend", "remote")
+    monkeypatch.setattr(settings, "translation_api_key", None)
+    translation._translate.cache_clear()
+    with pytest.raises(RuntimeError):
+        translate_to_english("काठमाडौं")
+    translation._translate.cache_clear()

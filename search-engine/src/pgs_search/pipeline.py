@@ -23,6 +23,8 @@ import logging
 import math
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -31,7 +33,7 @@ from opensearchpy.exceptions import ConnectionError as OpenSearchConnectionError
 from opensearchpy.exceptions import ConnectionTimeout, TransportError
 
 from pgs_search.config import Settings, settings
-from pgs_search.query.normalizer import QueryExpansion, expand_query
+from pgs_search.query.normalizer import MAX_VARIANTS, QueryExpansion, expand_query, translate_query
 from pgs_search.ranking.fusion import reciprocal_rank_fusion
 from pgs_search.retrieval.lexical import search_bm25
 
@@ -110,6 +112,11 @@ class PipelineOutput:
 DenseSearch = Callable[[str, SearchInput, int], list[Candidate]]
 Reranker = Callable[[list[Candidate], int], list[Candidate]]
 Expander = Callable[[str], QueryExpansion]
+Translator = Callable[[str, str], tuple[str, bool]]
+
+# Translation runs off the request thread, overlapping the dense stage. The model call is
+# serialized by its own lock, so more than two threads would only queue.
+_translation_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="translate")
 
 
 class FinalSearchPipeline:
@@ -122,12 +129,16 @@ class FinalSearchPipeline:
         dense_search: DenseSearch | None = None,
         reranker: Reranker | None = None,
         expander: Expander | None = None,
+        translator: Translator | None = None,
         config: Settings = settings,
     ) -> None:
         self._client = opensearch_client
         self._dense_search = dense_search
         self._reranker = reranker
-        self._expand = expander or expand_query
+        # A custom expander does its own translation; the default one leaves it to
+        # `translator`, which runs concurrently with the dense stage.
+        self._expand = expander or (lambda query: expand_query(query, translate=False))
+        self._translate = translator or (translate_query if expander is None else None)
         self._config = config
 
     # ------------------------------------------------------------------ public
@@ -139,16 +150,19 @@ class FinalSearchPipeline:
         stages: dict[str, str] = {}
 
         expansion = self._expand(search_input.query)
-        stages["translation"] = "failed" if expansion.translation_failed else "ok"
         if not expansion.normalized:
             raise InvalidSearchRequest("the query has no searchable characters")
+        pending = self._start_translation(search_input.query, expansion)
+
+        # Dense retrieval does not need the translation (LaBSE is cross-lingual), so the
+        # two overlap; BM25 then waits (briefly) for the translated variant.
+        dense = self._dense(expansion.normalized, search_input, pool, deadline, stages)
+        expansion = self._finish_translation(expansion, pending, deadline, stages)
 
         filters = build_filter_clauses(search_input)
         bm25_hits = self._bm25(expansion.variants, pool, filters, deadline)
         bm25 = [normalize_bm25_hit(hit) for hit in bm25_hits]
         stages["bm25"] = "ok"
-
-        dense = self._dense(expansion.normalized, search_input, pool, deadline, stages)
 
         fused = reciprocal_rank_fusion([bm25, dense])[:pool]
         candidates = self._merge(fused, bm25, dense, stages)
@@ -187,6 +201,50 @@ class FinalSearchPipeline:
         return window
 
     # ------------------------------------------------------------------ stages
+
+    def _start_translation(
+        self, query: str, expansion: QueryExpansion
+    ) -> Future[tuple[str, bool]] | None:
+        if self._translate is None or not self._config.translation_enabled:
+            return None
+        if expansion.language not in ("en", "ne"):
+            return None
+        return _translation_pool.submit(self._translate, query, expansion.language)
+
+    def _finish_translation(
+        self,
+        expansion: QueryExpansion,
+        pending: Future[tuple[str, bool]] | None,
+        deadline: float | None,
+        stages: dict[str, str],
+    ) -> QueryExpansion:
+        """Add the translated variant if it is ready within the wait budget."""
+        if pending is None:
+            if self._translate is None:  # a custom expander already translated
+                stages["translation"] = "failed" if expansion.translation_failed else "ok"
+            else:
+                stages["translation"] = "skipped: not applicable"
+            return expansion
+        wait = self._config.translation_wait_seconds
+        if deadline is not None:
+            wait = min(wait, max(deadline - time.monotonic(), 0.0))
+        try:
+            translated, failed = pending.result(timeout=wait)
+        except FutureTimeout:
+            # Keeps running (and fills the translation cache for the next search).
+            stages["translation"] = "skipped: too slow"
+            return expansion
+        except Exception:  # noqa: BLE001 -- optional stage: model or runtime failure
+            logger.warning("query translation failed", exc_info=True)
+            stages["translation"] = "failed"
+            return expansion
+        stages["translation"] = "failed" if failed else "ok"
+        if not translated:
+            return expansion
+        variants = list(dict.fromkeys([*expansion.variants, translated]))[:MAX_VARIANTS]
+        return QueryExpansion(
+            expansion.normalized, expansion.language, variants, expansion.translation_failed
+        )
 
     def _opensearch(self) -> Any:
         if self._client is None:
