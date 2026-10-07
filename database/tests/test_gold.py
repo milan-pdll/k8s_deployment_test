@@ -325,7 +325,7 @@ class TestJudgments:
             (bad, 0, 1),
         ]
         assert rows[0]["freshness"] is not None and "source_authority" in rows[0]
-        assert [r for r in log.training_examples(min_labels=2) if r["query"] == "zz budget"][0][
+        assert next(r for r in log.training_examples(min_labels=2) if r["query"] == "zz budget")[
             "page_id"
         ] == good
 

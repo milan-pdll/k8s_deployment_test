@@ -2,10 +2,13 @@ package workflows
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 
 	"search-engine-scraper/internal/activities"
@@ -130,5 +133,85 @@ func TestCrawlDomainsWorkflow_CrawlsEveryPageOfEveryDomain(t *testing.T) {
 		if ev.RunID != 7 || ev.Status != "completed" || ev.PagesFetched != 1+len(subPages) {
 			t.Errorf("event for %s = %+v, want run 7, completed, %d pages", h, ev, 1+len(subPages))
 		}
+	}
+}
+
+// TestCrawlDomainsWorkflow_CrawlsInBatches proves domains are crawled in
+// batches: no domain of batch N+1 is fetched before every domain of batch N
+// has published its site event, so ETL gets events in groups.
+func TestCrawlDomainsWorkflow_CrawlsInBatches(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(CrawlWorkflow)
+
+	const batch = 3
+	var seeds []Seed
+	batchOf := map[string]int{}
+	for i := 0; i < 8; i++ {
+		h := fmt.Sprintf("d%d.example.np", i)
+		seeds = append(seeds, Seed{URL: "https://" + h + "/"})
+		batchOf[h] = i / batch
+	}
+
+	var mu sync.Mutex
+	seq := 0
+	firstFetch := map[string]int{}
+	published := map[string]int{}
+
+	env.OnActivity(act.ProcessPage, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in activities.ProcessPageInput) (activities.ProcessPageOutput, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			seq++
+			if h := normalize.Hostname(in.URL); firstFetch[h] == 0 {
+				firstFetch[h] = seq
+			}
+			return activities.ProcessPageOutput{URL: in.URL, NormalizedURL: in.URL, StatusCode: 200, ContentType: "text/html", ContentHash: in.URL, Text: "page"}, nil
+		},
+	)
+	env.OnActivity(act.DiscoverSitemapURLs, mock.Anything, mock.Anything).Return(activities.DiscoverSitemapURLsOutput{}, nil)
+	env.OnActivity(act.WriteDocument, mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity(act.StartCrawlRun, mock.Anything, mock.Anything).Return(int64(0), nil) // run tracking unavailable: events must still go out
+	env.OnActivity(act.FinishCrawlRun, mock.Anything, mock.Anything).Return(nil)
+	env.OnActivity(act.PublishSiteCrawled, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in activities.PublishSiteCrawledInput) error {
+			mu.Lock()
+			defer mu.Unlock()
+			seq++
+			published[in.Host] = seq
+			return nil
+		},
+	)
+
+	env.ExecuteWorkflow(CrawlDomainsWorkflow, CrawlDomainsInput{
+		Seeds:                seeds,
+		PerDomain:            CrawlWorkflowInput{MaxDepth: 1, MaxPages: 5, Concurrency: 2, MaxConcurrentPerHost: 1},
+		MaxConcurrentDomains: 20,
+		DomainBatchSize:      batch,
+	})
+	if err := env.GetWorkflowError(); err != nil {
+		t.Fatalf("workflow error: %v", err)
+	}
+	if len(published) != len(seeds) {
+		t.Fatalf("site events = %d, want %d (even with run tracking off)", len(published), len(seeds))
+	}
+	for h, b := range batchOf {
+		for h2, b2 := range batchOf {
+			if b2 == b+1 && firstFetch[h2] < published[h] {
+				t.Errorf("%s (batch %d) fetched before %s (batch %d) published its event", h2, b2, h, b)
+			}
+		}
+	}
+}
+
+func TestChildWasKilled(t *testing.T) {
+	if !childWasKilled(fmt.Errorf("child: %w", &temporal.TerminatedError{})) {
+		t.Error("terminated child not detected")
+	}
+	if !childWasKilled(temporal.NewTimeoutError(enumspb.TIMEOUT_TYPE_START_TO_CLOSE, nil)) {
+		t.Error("timed-out child not detected")
+	}
+	if childWasKilled(temporal.NewApplicationError("boom", "")) {
+		t.Error("an ordinary failure was treated as killed (it publishes its own event)")
 	}
 }

@@ -1,0 +1,12 @@
+[project]
+name = "pgs-api"
+version = "0.1.0"
+description = "PGS Search Engine API gateway (FastAPI)"
+requires-python = ">=3.11"
+# Pinned in requirements.txt (the image installs that file); pgs-db comes from database/.
+
+[tool.pytest.ini_options]
+# The package lives in src/ (pgs_api); the gRPC stubs it imports are the search engine's
+# (the image copies them next to the package).
+pythonpath = ["src", "../search-engine/src"]
+testpaths = ["tests"]

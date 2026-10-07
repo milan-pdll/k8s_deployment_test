@@ -17,7 +17,7 @@ from .models import District, DomainStats, GeoContentStats, LocalBody, PageScore
 
 # The Alembic head this package's models match. tests/test_hardening.py fails if a
 # migration is added without updating it.
-EXPECTED_REVISION = "a7b8c9d0e1f2"
+EXPECTED_REVISION = "b8c9d0e1f2a3"
 
 EXPECTED_COUNTS = {"provinces": 7, "districts": 77, "local_bodies": 753}
 STALE_AFTER = timedelta(hours=6)
@@ -44,7 +44,9 @@ def check(session: Session, *, now: datetime | None = None) -> dict[str, Any]:
     }
     for table, expected in EXPECTED_COUNTS.items():
         if counts[table] != expected:
-            failing.append(f"{table} has {counts[table]} rows, expected {expected}: seed_geography.py")
+            failing.append(
+                f"{table} has {counts[table]} rows, expected {expected}: seed_geography.py"
+            )
     if not session.scalar(select(func.count()).where(LocalBody.boundary.is_not(None))):
         degraded.append("boundaries not loaded: seed_boundaries.py")
 

@@ -18,7 +18,8 @@ import (
 
 func newTestActivities(mux *http.ServeMux) (*Activities, *httptest.Server) {
 	srv := httptest.NewServer(mux)
-	f := fetcher.New(5*time.Second, 0)
+	// httptest listens on 127.0.0.1, which the fetcher refuses by default.
+	f := fetcher.New(5*time.Second, 0, fetcher.WithAllowPrivateNetworks(true))
 	guard := robots.New(f, "testbot")
 	return New(f, guard, nil, nil, nil), srv
 }

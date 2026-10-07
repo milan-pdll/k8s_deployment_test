@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import unicodedata
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -101,8 +102,7 @@ def lemmatize_query(text: str) -> str:
     """
     stemmer = PorterStemmer()
     return " ".join(
-        stemmer.stem(token) if _is_latin_script(token) else token
-        for token in text.split()
+        stemmer.stem(token) if _is_latin_script(token) else token for token in text.split()
     )
 
 
@@ -167,28 +167,41 @@ def _is_romanized_nepali(text: str) -> bool:
     return bool(tokens) and all(token in get_romanized_ne_words() for token in tokens)
 
 
-def _translate_query(query: str, language: str) -> str:
+@dataclass(frozen=True)
+class QueryExpansion:
+    """A query and the lexical variants searched for it (the query itself first)."""
+
+    normalized: str
+    language: str
+    variants: list[str]
+    translation_failed: bool = False
+
+
+# Variants searched per query: the query, its lemma form, a place-name equivalent and
+# one translation. More would multiply the BM25 clauses for little recall.
+MAX_VARIANTS = 4
+
+
+def _translate_query(query: str, language: str) -> tuple[str, bool]:
     """Translate the full original query into the other language.
 
-    Only unambiguous single-language queries are translated; "mixed" and
-    "unknown" queries are left alone. Each direction is guarded separately so a
-    translation failure degrades to an empty result instead of propagating.
+    Only unambiguous single-language queries are translated; "mixed" and "unknown"
+    queries are left alone. Returns (translation, failed): a failure is logged and the
+    search goes on without the translated variant.
     """
-    if language == "en":
-        try:
-            return translate_to_nepali(query)
-        except Exception:
-            logger.warning("Nepali translation failed for query: %s", query, exc_info=True)
-    elif language == "ne":
-        try:
-            return translate_to_english(query)
-        except Exception:
-            logger.warning("English translation failed for query: %s", query, exc_info=True)
-    return ""
+    targets = {"en": (translate_to_nepali, "Nepali"), "ne": (translate_to_english, "English")}
+    if language not in targets:
+        return "", False
+    translate, target = targets[language]
+    try:
+        return translate(query), False
+    except Exception:  # model or runtime failure: degrade to untranslated search
+        logger.warning("%s translation failed", target, exc_info=True)
+        return "", True
 
 
-def expand_query_terms(query: str) -> list[str]:
-    """Expand a query into search terms and variants."""
+def expand_query(query: str) -> QueryExpansion:
+    """Normalize a query and expand it into search variants."""
     normalized = normalize_query(query)
     terms = [normalized]
     lemma_variant = " ".join(lemmatize(normalized))
@@ -196,12 +209,19 @@ def expand_query_terms(query: str) -> list[str]:
         terms.append(lemma_variant)
     place_map = get_place_map()
     reverse_place_map = get_reverse_place_map()
-    candidates = [normalized, lemma_variant, *normalized.split()]
-    for candidate in candidates:
+    for candidate in [normalized, lemma_variant, *normalized.split()]:
         equivalent = place_map.get(candidate) or reverse_place_map.get(candidate)
         if equivalent:
             terms.append(equivalent)
-    translated = _translate_query(query, detect_language(query))
+    language = detect_language(query)
+    # The original casing translates better (proper nouns); whitespace is collapsed.
+    translated, failed = _translate_query(" ".join(query.split()), language)
     if translated:
         terms.append(translated)
-    return list(dict.fromkeys(terms))
+    variants = [term for term in dict.fromkeys(terms) if term][:MAX_VARIANTS]
+    return QueryExpansion(normalized, language, variants, failed)
+
+
+def expand_query_terms(query: str) -> list[str]:
+    """Expand a query into search terms and variants."""
+    return expand_query(query).variants

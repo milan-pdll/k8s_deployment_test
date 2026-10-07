@@ -299,7 +299,9 @@ class TestEntities:
             silver,
             bronze,
             2,
-            entities=[{"type": "PERSON", "name_en": "  DHANRAJ   acharya ", "name_ne": "धनराज आचार्य"}],
+            entities=[
+                {"type": "PERSON", "name_en": "  DHANRAJ   acharya ", "name_ne": "धनराज आचार्य"}
+            ],
         )
         entities = silver.session.scalars(select(Entity)).all()
         assert len(entities) == 1
@@ -361,7 +363,10 @@ class TestEmbeddings:
             embeddings={
                 "model_name": "all-MiniLM-L6-v2",
                 "model_version": "2",
-                "chunks": [{"text": "first", "vector": vec(0)}, {"text": "second", "vector": vec(1)}],
+                "chunks": [
+                    {"text": "first", "vector": vec(0)},
+                    {"text": "second", "vector": vec(1)},
+                ],
             },
         )
         rows = silver.session.scalars(
@@ -416,7 +421,8 @@ class TestEmbeddings:
         assert page_id in missing()
         self._embed(silver, page_id, 1)
         assert page_id not in missing()
-        assert page_id in [p.id for p in silver.pages_missing_embeddings("sentence-transformers/LaBSE", limit=1000)]
+        labse_missing = silver.pages_missing_embeddings("sentence-transformers/LaBSE", limit=1000)
+        assert page_id in [p.id for p in labse_missing]
 
         # New content: the old vectors no longer describe the page.
         url = f"https://{HOST}/notice/1"
@@ -509,7 +515,10 @@ class TestEtlLoop:
     def _docs(self, factory: sessionmaker[Session], *ns: int, **kw: Any) -> list[int]:
         with factory() as s, s.begin():
             repo = BronzeRepository(s)
-            return [repo.save_document(bronze_doc(n, **kw), register_unknown_domains=True).id for n in ns]
+            return [
+                repo.save_document(bronze_doc(n, **kw), register_unknown_domains=True).id
+                for n in ns
+            ]
 
     def test_pages_are_saved_marked_and_domain_tagged(
         self, session_factory: sessionmaker[Session]
@@ -561,7 +570,9 @@ class TestEtlLoop:
         with session_factory() as s:
             pages = {
                 p.crawled_document_id: p
-                for p in s.scalars(select(Page).where(Page.crawled_document_id.in_([first, second])))
+                for p in s.scalars(
+                    select(Page).where(Page.crawled_document_id.in_([first, second]))
+                )
             }
             assert pages[first].duplicate_of_id is None
             assert pages[second].duplicate_of_id == pages[first].id

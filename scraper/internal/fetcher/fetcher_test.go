@@ -27,7 +27,7 @@ func TestGet_FollowsRedirectsAndRecordsFinalURLAndChain(t *testing.T) {
 	defer srv.Close()
 	baseURL = srv.URL
 
-	f := New(5*time.Second, 0)
+	f := New(5*time.Second, 0, WithAllowPrivateNetworks(true))
 	res, err := f.Get(context.Background(), srv.URL+"/start")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -53,7 +53,7 @@ func TestGet_NoRedirect_FinalURLMatchesRequestedAndChainEmpty(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := New(5*time.Second, 0)
+	f := New(5*time.Second, 0, WithAllowPrivateNetworks(true))
 	res, err := f.Get(context.Background(), srv.URL+"/page")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -92,7 +92,7 @@ func TestGet_ConcurrentRedirectsDontCrossContaminate(t *testing.T) {
 	defer srv.Close()
 	baseURL = srv.URL
 
-	f := New(5*time.Second, 0)
+	f := New(5*time.Second, 0, WithAllowPrivateNetworks(true))
 	var wg sync.WaitGroup
 	errs := make([]error, n)
 	chains := make([][]string, n)
@@ -184,7 +184,7 @@ func TestGet_UsesDNSCacheDialContext(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := New(5*time.Second, 0)
+	f := New(5*time.Second, 0, WithAllowPrivateNetworks(true))
 	if _, err := f.Get(context.Background(), srv.URL); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestGet_BandwidthLimit_ThrottlesAggregateRate(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	f := New(5*time.Second, bandwidthBPS)
+	f := New(5*time.Second, bandwidthBPS, WithAllowPrivateNetworks(true))
 
 	start := time.Now()
 	if _, err := f.Get(context.Background(), srv.URL); err != nil {

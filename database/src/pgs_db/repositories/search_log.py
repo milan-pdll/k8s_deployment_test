@@ -213,7 +213,8 @@ class SearchLogRepository:
         }
 
     def top_queries(self, since: datetime, *, limit: int = 20) -> list[dict[str, Any]]:
-        """The most searched (normalized) queries since `since`, with how often they found nothing."""
+        """The most searched (normalized) queries since `since`, with how often they
+        found nothing."""
         return self._grouped(since, limit, zero_only=False)
 
     def zero_result_queries(self, since: datetime, *, limit: int = 20) -> list[dict[str, Any]]:

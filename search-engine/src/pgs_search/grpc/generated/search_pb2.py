@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0csearch.proto\x12\x10search.engine.v1\"\xbf\x01\n\rSearchRequest\x12\r\n\x05query\x18\x01 \x01(\t\x12\x15\n\rprovince_code\x18\x02 \x01(\t\x12\x15\n\rdistrict_code\x18\x03 \x01(\t\x12\x17\n\x0fmunicipality_id\x18\x04 \x01(\t\x12\x13\n\x0bward_number\x18\x05 \x01(\x05\x12\x14\n\x0c\x63ontent_type\x18\x06 \x01(\t\x12\x10\n\x08language\x18\x07 \x01(\t\x12\x0c\n\x04page\x18\x08 \x01(\x05\x12\r\n\x05limit\x18\t \x01(\x05\"\x89\x01\n\x0eSearchResponse\x12\x13\n\x0bstatus_code\x18\x01 \x01(\x05\x12\x12\n\ntotal_hits\x18\x02 \x01(\x05\x12\x19\n\x11\x65xecution_time_ms\x18\x03 \x01(\x03\x12\x33\n\x07results\x18\x04 \x03(\x0b\x32\".search.engine.v1.SearchResultItem\"\xb8\x01\n\x10SearchResultItem\x12\n\n\x02id\x18\x01 \x01(\t\x12\x13\n\x0bresult_type\x18\x02 \x01(\t\x12\r\n\x05title\x18\x03 \x01(\t\x12\x0b\n\x03url\x18\x04 \x01(\t\x12\x0e\n\x06\x64omain\x18\x05 \x01(\t\x12\x0f\n\x07snippet\x18\x06 \x01(\t\x12\x14\n\x0c\x64ownload_url\x18\x07 \x01(\t\x12\x17\n\x0f\x66ile_size_bytes\x18\x08 \x01(\x03\x12\x17\n\x0frelevance_score\x18\t \x01(\x01\x32\x63\n\rSearchService\x12R\n\rExecuteSearch\x12\x1f.search.engine.v1.SearchRequest\x1a .search.engine.v1.SearchResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0csearch.proto\x12\x10search.engine.v1\"\xbf\x01\n\rSearchRequest\x12\r\n\x05query\x18\x01 \x01(\t\x12\x15\n\rprovince_code\x18\x02 \x01(\t\x12\x15\n\rdistrict_code\x18\x03 \x01(\t\x12\x17\n\x0fmunicipality_id\x18\x04 \x01(\t\x12\x13\n\x0bward_number\x18\x05 \x01(\x05\x12\x14\n\x0c\x63ontent_type\x18\x06 \x01(\t\x12\x10\n\x08language\x18\x07 \x01(\t\x12\x0c\n\x04page\x18\x08 \x01(\x05\x12\r\n\x05limit\x18\t \x01(\x05\"\xb3\x01\n\x0eSearchResponse\x12\x13\n\x0bstatus_code\x18\x01 \x01(\x05\x12\x12\n\ntotal_hits\x18\x02 \x01(\x05\x12\x19\n\x11\x65xecution_time_ms\x18\x03 \x01(\x03\x12\x33\n\x07results\x18\x04 \x03(\x0b\x32\".search.engine.v1.SearchResultItem\x12\x16\n\x0equery_language\x18\x05 \x01(\t\x12\x10\n\x08\x64\x65graded\x18\x06 \x01(\x08\"\xad\x01\n\x06GeoRef\x12\x15\n\rprovince_code\x18\x01 \x01(\t\x12\x15\n\rprovince_name\x18\x02 \x01(\t\x12\x15\n\rdistrict_code\x18\x03 \x01(\t\x12\x15\n\rdistrict_name\x18\x04 \x01(\t\x12\x17\n\x0fmunicipality_id\x18\x05 \x01(\t\x12\x19\n\x11municipality_name\x18\x06 \x01(\t\x12\x13\n\x0bward_number\x18\x07 \x01(\x05\"\x87\x02\n\x10SearchResultItem\x12\n\n\x02id\x18\x01 \x01(\t\x12\x13\n\x0bresult_type\x18\x02 \x01(\t\x12\r\n\x05title\x18\x03 \x01(\t\x12\x0b\n\x03url\x18\x04 \x01(\t\x12\x0e\n\x06\x64omain\x18\x05 \x01(\t\x12\x0f\n\x07snippet\x18\x06 \x01(\t\x12\x14\n\x0c\x64ownload_url\x18\x07 \x01(\t\x12\x17\n\x0f\x66ile_size_bytes\x18\x08 \x01(\x03\x12\x17\n\x0frelevance_score\x18\t \x01(\x01\x12\x10\n\x08language\x18\n \x01(\t\x12\x14\n\x0cpublished_at\x18\x0b \x01(\t\x12%\n\x03geo\x18\x0c \x01(\x0b\x32\x18.search.engine.v1.GeoRef2c\n\rSearchService\x12R\n\rExecuteSearch\x12\x1f.search.engine.v1.SearchRequest\x1a .search.engine.v1.SearchResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,9 +34,11 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_SEARCHREQUEST']._serialized_start=35
   _globals['_SEARCHREQUEST']._serialized_end=226
   _globals['_SEARCHRESPONSE']._serialized_start=229
-  _globals['_SEARCHRESPONSE']._serialized_end=366
-  _globals['_SEARCHRESULTITEM']._serialized_start=369
-  _globals['_SEARCHRESULTITEM']._serialized_end=553
-  _globals['_SEARCHSERVICE']._serialized_start=555
-  _globals['_SEARCHSERVICE']._serialized_end=654
+  _globals['_SEARCHRESPONSE']._serialized_end=408
+  _globals['_GEOREF']._serialized_start=411
+  _globals['_GEOREF']._serialized_end=584
+  _globals['_SEARCHRESULTITEM']._serialized_start=587
+  _globals['_SEARCHRESULTITEM']._serialized_end=850
+  _globals['_SEARCHSERVICE']._serialized_start=852
+  _globals['_SEARCHSERVICE']._serialized_end=951
 # @@protoc_insertion_point(module_scope)

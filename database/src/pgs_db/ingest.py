@@ -116,7 +116,9 @@ class S3Source:
             try:
                 import boto3
             except ImportError as exc:  # pragma: no cover - depends on the install
-                raise RuntimeError('S3 ingest needs the s3 extra: pip install "pgs-db[s3]"') from exc
+                raise RuntimeError(
+                    'S3 ingest needs the s3 extra: pip install "pgs-db[s3]"'
+                ) from exc
             client = boto3.client("s3", endpoint_url=os.environ.get("PGS_S3_ENDPOINT_URL") or None)
         self.client = client
         self.bucket = bucket
@@ -226,7 +228,7 @@ def ingest_ndjson(
                             register_unknown_domains=register_unknown_domains,
                         )
                     report.documents_loaded += 1
-                except Exception as exc:  # noqa: BLE001 -- one bad line must not stop the file
+                except Exception as exc:
                     report.documents_failed += 1
                     message = f"{type(exc).__name__}: {exc}"[:2000]
                     report.errors[key] = message
@@ -257,7 +259,9 @@ def _ingest_run(
     # Read the manifest before listing: if it already said "completed", every object
     # listed afterwards belongs to the finished run.
     status = str((manifest or {}).get("status", "")).upper()
-    pending = [o for o in source.documents(run_id) if watermark is None or o.last_modified >= watermark]
+    pending = [
+        o for o in source.documents(run_id) if watermark is None or o.last_modified >= watermark
+    ]
     newest = watermark
     for start in range(0, len(pending), _CHUNK):
         chunk = pending[start : start + _CHUNK]
@@ -275,7 +279,7 @@ def _ingest_run(
                             register_unknown_domains=register_unknown_domains,
                         )
                     loaded += 1
-                except Exception as exc:  # noqa: BLE001 -- one bad object must not stop the run
+                except Exception as exc:
                     failed += 1
                     message = f"{type(exc).__name__}: {exc}"[:2000]
                     report.errors[obj.key] = message

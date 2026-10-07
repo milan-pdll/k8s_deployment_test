@@ -1,145 +1,56 @@
 from __future__ import annotations
 
-import json
-import math
-import os
-import subprocess
-import sys
-from pathlib import Path
-
 import pytest
 
-from pgs_search.ranking import lightgbm_reranker as reranker
+from pgs_search.ranking import lightgbm_reranker
+from pgs_search.ranking.fusion import reciprocal_rank_fusion
+from pgs_search.ranking.lightgbm_reranker import FEATURES, get_model, rerank_results
 
 
-class PredictFromBm25:
-    def predict(self, features):
-        return features["bm25_score"].to_numpy()
+def candidate(document_id: str, **features: float) -> dict:
+    return {"document_id": document_id, **dict.fromkeys(FEATURES, 0.0), **features}
 
 
-def sample_results() -> list[dict]:
-    return [
-        {
-            "id": "doc-1",
-            "title": "First result",
-            "url": "https://example.com/1",
-            "bm25_score": 1.0,
-            "vector_score": 0.3,
-        },
-        {
-            "id": "doc-2",
-            "title": "Second result",
-            "url": "https://example.com/2",
-            "bm25_score": 3.0,
-            "vector_score": 0.8,
-            "content_length": 700,
-        },
-        {
-            "id": "doc-3",
-            "title": "Third result",
-            "url": "https://example.com/3",
-            "bm25_score": 2.0,
-            "vector_score": 0.5,
-        },
-    ]
+def test_the_shipped_model_loads_without_pickle_and_has_the_feature_contract() -> None:
+    assert lightgbm_reranker.MODEL_PATH.suffix == ".txt"
+    booster = get_model()
+    assert booster.feature_name() == FEATURES
 
 
-def test_empty_list_returns_empty_list() -> None:
-    assert reranker.rerank_results([]) == []
+def test_rerank_sets_scores_sorts_and_caps() -> None:
+    results = [candidate("a"), candidate("b", bm25_score=30.0, title_match=1), candidate("c")]
+    ranked = rerank_results(results, top_k=2)
+    assert len(ranked) == 2
+    assert all("rerank_score" in result for result in ranked)
+    assert ranked[0]["rerank_score"] >= ranked[1]["rerank_score"]
 
 
-def test_invalid_non_list_input_raises_type_error() -> None:
+def test_ties_keep_the_incoming_order() -> None:
+    results = [candidate(str(i)) for i in range(5)]  # identical features
+    ranked = rerank_results(results)
+    assert [result["document_id"] for result in ranked] == ["0", "1", "2", "3", "4"]
+
+
+def test_invalid_feature_values_count_as_zero() -> None:
+    weird = candidate("x", bm25_score=float("nan"), content_length=float("inf"))
+    weird["vector_score"] = "not a number"
+    plain = candidate("y")
+    assert rerank_results([weird])[0]["rerank_score"] == rerank_results([plain])[0]["rerank_score"]
+
+
+def test_input_validation() -> None:
+    assert rerank_results([]) == []
     with pytest.raises(TypeError):
-        reranker.rerank_results({"id": "doc-1"})
-
-
-def test_invalid_top_k_raises_value_error() -> None:
+        rerank_results("nope")  # type: ignore[arg-type]
     with pytest.raises(ValueError):
-        reranker.rerank_results(sample_results(), top_k=0)
+        rerank_results([candidate("a")], top_k=0)
 
 
-def test_missing_and_invalid_feature_values_are_filled_safely() -> None:
-    df = reranker.prepare_features(
-        [{"id": "doc-1", "bm25_score": "not-a-number", "vector_score": 0.7}]
-    )
-
-    assert list(df.columns).count("content_length") == 1
-    assert df.loc[0, "bm25_score"] == 0
-    assert df.loc[0, "content_length"] == 0
-    assert math.isclose(df.loc[0, "vector_score"], 0.7)
-
-
-def test_duplicate_ids_are_removed(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(reranker, "get_model", lambda: PredictFromBm25())
-    results = [
-        {"id": "same", "title": "First copy", "bm25_score": 1},
-        {"id": "same", "title": "Second copy", "bm25_score": 99},
-        {"id": "unique", "title": "Unique", "bm25_score": 2},
-    ]
-
-    reranked = reranker.rerank_results(results, top_k=10)
-
-    assert [result["id"] for result in reranked] == ["unique", "same"]
-    assert reranked[1]["title"] == "First copy"
-
-
-def test_reranking_output_is_sorted_and_respects_top_k(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(reranker, "get_model", lambda: PredictFromBm25())
-
-    reranked = reranker.rerank_results(sample_results(), top_k=2)
-
-    assert len(reranked) == 2
-    assert [result["id"] for result in reranked] == ["doc-2", "doc-3"]
-    assert reranked[0]["rerank_score"] >= reranked[1]["rerank_score"]
-    assert reranked[0]["new_rank"] == 1
-    assert reranked[0]["rank_change"] == 1
-
-
-def test_original_result_fields_are_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(reranker, "get_model", lambda: PredictFromBm25())
-
-    reranked = reranker.rerank_results(sample_results(), top_k=1)
-
-    assert reranked[0]["id"] == "doc-2"
-    assert reranked[0]["title"] == "Second result"
-    assert reranked[0]["url"] == "https://example.com/2"
-    assert "rerank_score" in reranked[0]
-    assert "original_rank" in reranked[0]
-
-
-def test_real_model_loads_and_predicts_if_available() -> None:
-    if not reranker.MODEL_PATH.exists():
-        pytest.skip("Real LightGBM model has not been trained yet.")
-
-    search_engine_root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(search_engine_root / "src")
-    code = """
-import json
-from pgs_search.ranking.lightgbm_reranker import rerank_results
-
-results = rerank_results(
-    [
-        {"id": "doc-1", "bm25_score": 1.0, "vector_score": 0.3},
-        {"id": "doc-2", "bm25_score": 3.0, "vector_score": 0.8},
-        {"id": "doc-3", "bm25_score": 2.0, "vector_score": 0.5},
-    ],
-    top_k=2,
-)
-print(json.dumps([result["rerank_score"] for result in results]))
-"""
-
-    completed = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=search_engine_root,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        pytest.skip(f"Real LightGBM model could not load in subprocess: {completed.stderr}")
-
-    scores = json.loads(completed.stdout)
-    assert len(scores) == 2
-    assert all(isinstance(score, float) for score in scores)
+def test_rrf_fuses_by_rank_and_counts_a_document_once_per_list() -> None:
+    bm25 = [{"document_id": "a"}, {"document_id": "b"}, {"document_id": "a"}]
+    dense = [{"document_id": "b"}, {"document_id": "c"}]
+    fused = dict(reciprocal_rank_fusion([bm25, dense], k=60))
+    assert fused["b"] == pytest.approx(1 / 62 + 1 / 61)
+    assert fused["a"] == pytest.approx(1 / 61)
+    assert fused["c"] == pytest.approx(1 / 62)
+    assert next(doc for doc, _ in reciprocal_rank_fusion([bm25, dense])) == "b"

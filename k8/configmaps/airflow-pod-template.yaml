@@ -64,29 +64,24 @@ data:
               value: postgresql+psycopg://pgs_etl:$(PGS_ETL_DB_PASSWORD)@postgres:5432/$(POSTGRES_DB)
             - name: DB_APPLICATION_NAME
               value: pgs-airflow-task
-            - name: EMBEDDING_MODEL_NAME
-              value: sentence-transformers/LaBSE
+            # pgs_db_jobs_* DAGs run `python -m pgs_db.jobs` as pgs_jobs.
+            - name: PGS_JOBS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: PGS_JOBS_DB_PASSWORD }
+            - name: PGS_JOBS_DATABASE_URL
+              value: postgresql+psycopg://pgs_jobs:$(PGS_JOBS_DB_PASSWORD)@postgres:5432/$(POSTGRES_DB)
           volumeMounts:
             - name: logs
               mountPath: /opt/airflow/logs
-            - name: processed
-              mountPath: /opt/airflow/data/processed
-            - name: models
-              mountPath: /home/airflow/.cache/huggingface
           securityContext:
             allowPrivilegeEscalation: false
             capabilities: { drop: ["ALL"] }
-          # LaBSE embeddings (~1.8 GB model) run inside the transform task.
+          # DAG tasks only poll Kafka, read `domains`, start Temporal workflows and run the
+          # light pgs_db jobs; the ETL itself runs in etl-worker and the Spark workers.
           resources:
-            requests: { cpu: 250m, memory: 512Mi }
-            limits: { memory: 3Gi }
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
       volumes:
         - name: logs
           persistentVolumeClaim:
             claimName: airflow-logs
-        - name: processed
-          persistentVolumeClaim:
-            claimName: etl-processed
-        - name: models
-          persistentVolumeClaim:
-            claimName: etl-models

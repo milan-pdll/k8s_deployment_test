@@ -40,9 +40,10 @@ Every Silver field traces to one of two places:
 The exceptions are the geo-tag provenance fields (`method`, `confidence`,
 `mention_text`), which §5.2 does not have yet — see §9.
 
-**No Spark transform exists yet**: `ETL/spark/test_spark.py` is a PySpark hello-world,
-and the Airflow DAG is labelled "dummy ... Spark will do this for real later". This
-contract encodes the *documented* output, not observed output.
+**The Spark transform exists and uses this contract** (2026-10-07):
+`ETL/spark/site_pipeline.py` calls `save_transformed(..., bronze_document=<the scraper's
+Document from S3>)` once per page, and `tests/test_pipeline_contract.py` checks that call
+with the record the pipeline builds, as the `pgs_etl` role.
 
 ## 2. What is stored, and what is not
 
@@ -201,13 +202,14 @@ for page in repo.pages_missing_embeddings("sentence-transformers/LaBSE", limit=5
 
 ### Records from `ETL/spark/transform.py`, as they are
 
-The current pipeline (Kafka signal → `transform_file` → record) needs no reshaping:
+The pipeline (site event → Spark → record) saves each record with its Bronze source:
 
 ```python
 from pgs_db.etl import save_transformed
 
-record = transform_file(signal, dfs_root)             # the ETL's own function
-save_transformed(Session, record, geo_confidence=0.6)  # finds the Bronze row, saves, marks it
+# record: transform.transform_document(...) + crawl_run_id, fetched_at, category,
+# keywords, published_at and the LaBSE embedding (ETL/spark/site_pipeline.py)
+save_transformed(Session, record, geo_confidence=0.5, bronze_document=document)
 ```
 
 - The Bronze row is found by the record's `object_key` (`stored_files.storage_path`
@@ -524,6 +526,11 @@ codes in the shape the `geo_location` block expects.
   and a confidence the ETL chooses.
 
 ## 10. Open questions for the ETL/Spark team
+
+Resolved on 2026-10-07: 1 (the transform exists, see §1), 7 (the Kafka consumer is gone; the
+ETL saves to Silver) and 8 (the search engine embeds queries with LaBSE). Still open: 2 (the
+ETL sends no content geo tags yet; pages get their domain's location), 9 (infected pages are
+rejected and logged, not written to `quarantined_files`).
 
 1. **No Spark implementation exists to verify against.** Confirm this contract when the
    real transform lands.

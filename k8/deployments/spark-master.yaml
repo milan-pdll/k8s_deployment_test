@@ -1,0 +1,45 @@
+# Spark standalone master: accepts the ETL worker's application and schedules its tasks
+# onto the spark-worker pods. Runs the ETL image (its /opt/etl-venv has PySpark).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spark-master
+  labels:
+    app.kubernetes.io/name: spark-master
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: spark-master
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: spark-master
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 50000
+        runAsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: spark-master
+          image: pgs-search-engine/etl
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/bin/dumb-init", "--", "/opt/etl-venv/bin/spark-class",
+                    "org.apache.spark.deploy.master.Master",
+                    "--host", "0.0.0.0", "--port", "7077", "--webui-port", "8080"]
+          ports:
+            - { name: spark, containerPort: 7077 }
+            - { name: ui, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /, port: ui }
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { memory: 1Gi }

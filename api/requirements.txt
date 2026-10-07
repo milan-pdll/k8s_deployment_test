@@ -1,7 +1,6 @@
 # Runtime dependencies of the API service, pinned for reproducible images
-# (api/Dockerfile). Versions match the repo-root requirements.txt freeze, the
-# shared development venv. The shared pgs-db package is not listed: the Dockerfile
-# installs it from database/ with database/constraints.txt.
+# (api/Dockerfile); the root .venv installs the same file. The shared pgs-db package is
+# not listed: the Dockerfile installs it from database/ with database/constraints.txt.
 
 # Direct dependencies
 fastapi==0.141.1
@@ -11,6 +10,8 @@ uvicorn[standard]==0.53.0
 # runtime versions.
 grpcio==1.84.0
 protobuf==7.35.1
+# grpc.health.v1 client for GET /health/ready (same release as grpcio).
+grpcio-health-checking==1.84.0
 
 # Transitive dependencies
 annotated-doc==0.0.5

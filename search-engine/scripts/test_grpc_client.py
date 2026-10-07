@@ -1,3 +1,5 @@
+"""Send one sample query to a running search engine (localhost:50051) and print it."""
+
 from __future__ import annotations
 
 import grpc
@@ -14,13 +16,14 @@ def main() -> None:
             search_pb2.SearchRequest(
                 query="पोखरा बजेट",
                 province_code="P4",
-                district_code="D39",
+                district_code="D38",  # Kaski in the seeded gazetteer
                 language="ne",
                 page=1,
                 limit=10,
-            )
+            ),
+            timeout=30,
         )
-        print(f"Status code: {response.status_code}")
+        print(f"Query language: {response.query_language} (degraded: {response.degraded})")
         print(f"Total hits: {response.total_hits}")
         print(f"Execution time: {response.execution_time_ms} ms")
 
@@ -29,6 +32,8 @@ def main() -> None:
             print(f"URL: {result.url}")
             print(f"Domain: {result.domain}")
             print(f"Relevance score: {result.relevance_score}")
+            if result.HasField("geo"):
+                print(f"Place: {result.geo.municipality_name or result.geo.district_name}")
     finally:
         channel.close()
 

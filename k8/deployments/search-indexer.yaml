@@ -1,0 +1,57 @@
+# Search indexer: keeps the OpenSearch index a copy of PostgreSQL Silver
+# (pgs_search.indexing.indexer): claims the pages the ETL saved, bulk-indexes them
+# (_id = page id) and marks them, as pgs_search. Same image as the search engine.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search-indexer
+  labels:
+    app.kubernetes.io/name: search-indexer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: search-indexer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: search-indexer
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: search-indexer
+          image: pgs-search-engine/search-engine
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "pgs_search.indexing.indexer"]
+          env:
+            - { name: OPENSEARCH_HOST, value: opensearch }
+            - { name: OPENSEARCH_PORT, value: "9200" }
+            - { name: OPENSEARCH_INDEX, value: np_web_pages }
+            - { name: INDEXER_HEARTBEAT_FILE, value: /tmp/indexer.alive }
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: POSTGRES_DB }
+            - name: PGS_SEARCH_DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pgs-secrets, key: PGS_SEARCH_DB_PASSWORD }
+            - name: DATABASE_URL
+              value: postgresql+psycopg://pgs_search:$(PGS_SEARCH_DB_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+            - { name: DB_APPLICATION_NAME, value: pgs-search-indexer }
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import os, sys, time; sys.exit(time.time() - os.path.getmtime('/tmp/indexer.alive') > 180)"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 50m, memory: 256Mi }
+            limits: { memory: 1Gi }

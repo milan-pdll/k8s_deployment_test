@@ -120,7 +120,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("open kafka site-event emitter: %v", err)
 		}
-		defer emitter.Close()
+		defer func() {
+			// Events are written synchronously; a Close error only means the
+			// connection did not shut down cleanly.
+			if err := emitter.Close(); err != nil {
+				log.Printf("close kafka site-event emitter: %v", err)
+			}
+		}()
 		sites = emitter
 	}
 

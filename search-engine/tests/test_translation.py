@@ -9,15 +9,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pgs_search.config import settings
 from pgs_search.query import translation
 from pgs_search.query.translation import (
     ENGLISH_LANG_CODE,
-    MODEL_NAME,
     NEPALI_LANG_CODE,
     get_model_and_tokenizer,
     translate_to_english,
     translate_to_nepali,
 )
+
+MODEL_NAME = settings.translation_model_name
 
 # Real NLLB token ids for the two language codes this module uses.
 _LANG_IDS = {"npi_Deva": 256130, "eng_Latn": 256047}
@@ -41,7 +43,7 @@ class _FakeTokenizer:
         self.decoded = decoded
         self.skip_special_tokens = None
 
-    def __call__(self, text, return_tensors=None):
+    def __call__(self, text, return_tensors=None, **kwargs):
         self.tokenized_text = text
         self.return_tensors = return_tensors
         self.src_lang_at_tokenize = self.src_lang
@@ -74,11 +76,13 @@ class _FakeModel:
 @pytest.fixture
 def fake_nllb():
     """Patch the cached loader so no real model is downloaded or run."""
+    translation._translate.cache_clear()  # results are cached per text
     with patch.object(translation, "get_model_and_tokenizer") as mock_loader:
         tokenizer = _FakeTokenizer()
         model = _FakeModel()
         mock_loader.return_value = (model, tokenizer)
         yield SimpleNamespace(model=model, tokenizer=tokenizer, loader=mock_loader)
+    translation._translate.cache_clear()
 
 
 def test_translate_to_nepali_uses_english_source_language(fake_nllb):
@@ -160,9 +164,11 @@ def test_get_model_and_tokenizer_loads_nllb_once_and_caches_it():
 
     get_model_and_tokenizer.cache_clear()
     try:
+        import transformers
+
         with (
-            patch.object(translation.AutoTokenizer, "from_pretrained") as mock_tokenizer_load,
-            patch.object(translation.AutoModelForSeq2SeqLM, "from_pretrained") as mock_model_load,
+            patch.object(transformers.AutoTokenizer, "from_pretrained") as mock_tokenizer_load,
+            patch.object(transformers.AutoModelForSeq2SeqLM, "from_pretrained") as mock_model_load,
         ):
             mock_model = MagicMock()
             mock_model_load.return_value = mock_model
@@ -174,9 +180,31 @@ def test_get_model_and_tokenizer_loads_nllb_once_and_caches_it():
 
             assert first is second
             assert first == (mock_model, mock_tokenizer)
-            mock_tokenizer_load.assert_called_once_with(MODEL_NAME)
-            mock_model_load.assert_called_once_with(MODEL_NAME)
+            revision = settings.translation_model_revision
+            mock_tokenizer_load.assert_called_once_with(MODEL_NAME, revision=revision)
+            mock_model_load.assert_called_once_with(MODEL_NAME, revision=revision)
             mock_model.eval.assert_called_once_with()
             assert get_model_and_tokenizer.cache_info().hits == 1
     finally:
         get_model_and_tokenizer.cache_clear()
+
+
+def test_translations_are_cached(fake_nllb):
+    translate_to_nepali("Budget notice")
+    translate_to_nepali("Budget notice")
+    assert fake_nllb.model.generate_kwargs is not None
+    assert translation._translate.cache_info().hits == 1
+
+
+def test_long_or_disabled_translation_is_skipped(fake_nllb, monkeypatch):
+    long_query = "x" * (settings.translation_max_query_chars + 1)
+    assert translate_to_nepali(long_query) == ""
+    disabled = settings.model_copy(update={"translation_enabled": False})
+    monkeypatch.setattr(translation, "settings", disabled)
+    assert translate_to_nepali("Budget notice") == ""
+    assert fake_nllb.model.generate_kwargs is None
+
+
+def test_generation_is_bounded(fake_nllb):
+    translate_to_nepali("Budget notice")
+    assert fake_nllb.model.generate_kwargs["max_new_tokens"] == translation.MAX_NEW_TOKENS

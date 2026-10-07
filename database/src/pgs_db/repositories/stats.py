@@ -291,7 +291,9 @@ class StatsRepository:
         `search` matches the hostname or website name, case-insensitively. Ordered by
         priority (HIGH first) then hostname. Counts are 0 until the first refresh.
         """
-        stmt = select(Domain, DomainStats).outerjoin(DomainStats, DomainStats.domain_id == Domain.id)
+        stmt = select(Domain, DomainStats).outerjoin(
+            DomainStats, DomainStats.domain_id == Domain.id
+        )
         if status is not None:
             stmt = stmt.where(Domain.status == status)
         if search and search.strip():

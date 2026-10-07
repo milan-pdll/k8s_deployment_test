@@ -117,8 +117,8 @@ def test_expand_mixed_language_query():
 
 
 def test_expand_empty_query():
-    assert expand_query_terms("") == [""]
-    assert expand_query_terms("   ") == [""]
+    assert expand_query_terms("") == []
+    assert expand_query_terms("   ") == []
 
 
 def test_lemmatize_stems_english_words():
@@ -251,7 +251,7 @@ def test_expand_query_terms_skips_empty_translation_result(stub_translation):
     stub_translation.to_english.return_value = ""
 
     assert expand_query_terms("himalayan trails") == ["himalayan trails", "himalayan trail"]
-    assert expand_query_terms("") == [""]
+    assert expand_query_terms("") == []
 
 
 def test_expand_query_terms_deduplicates_translation_match(stub_translation):

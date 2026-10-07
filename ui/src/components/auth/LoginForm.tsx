@@ -7,10 +7,12 @@ import { Loader2, Lock, Mail } from "lucide-react";
 export function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const next = searchParams.get("next") || "/dashboard";
+  // Only same-site paths: an absolute ?next= would be an open redirect.
+  const requested = searchParams.get("next") ?? "";
+  const next = requested.startsWith("/") && !requested.startsWith("//") ? requested : "/dashboard";
 
-  const [email, setEmail] = useState("admin@pgs.local");
-  const [password, setPassword] = useState("admin123");
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -22,7 +24,7 @@ export function LoginForm() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify({ login, password }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -39,14 +41,17 @@ export function LoginForm() {
   return (
     <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-4">
       <div>
-        <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">Email</label>
+        <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300">
+          Username or email
+        </label>
         <div className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-700">
           <Mail className="h-4 w-4 text-slate-400" />
           <input
-            type="email"
+            type="text"
+            autoComplete="username"
             required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            value={login}
+            onChange={(e) => setLogin(e.target.value)}
             className="w-full bg-transparent text-sm outline-none"
           />
         </div>
@@ -58,6 +63,7 @@ export function LoginForm() {
           <Lock className="h-4 w-4 text-slate-400" />
           <input
             type="password"
+            autoComplete="current-password"
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -78,8 +84,8 @@ export function LoginForm() {
       </button>
 
       <p className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-        Demo credentials are pre-filled — <strong>admin@pgs.local / admin123</strong>. This is a mock auth
-        flow; no real account is created.
+        Admin accounts are created by an operator (
+        <code>python scripts/create_admin.py</code> in <code>database/</code>).
       </p>
     </form>
   );

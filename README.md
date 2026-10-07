@@ -4,26 +4,31 @@ A real-time, geographically aware, cross-lingual (Nepali + English) search engin
 
 ![Architecture Diagram](architecture-diagram.svg)
 
+How it is built and operated -- data flow, contracts between the services, failure
+behavior, configuration, security and testing: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**.
+
 ## What it does
 
-- **Crawls** the Nepali web at scale — news portals, central/provincial/local government sites, government corporations and institutions, universities, banks and corporations, and other `.np`/Nepal-based websites (distributed crawler fleet, URL frontier queue, dedup).
-- **Extracts** Devanagari (and English) text and metadata from raw HTML across these varied site types.
-- **Geo-tags** content to a municipality/district/province using a Devanagari administrative gazetteer and NER-based disambiguation, where the content has a geographic association.
-- **Indexes** content with a hybrid ranking pipeline: Okapi BM25 (lexical) fused with dense multilingual embeddings (neural), so a query in Nepali or English returns correctly ranked results (English queries are auto-translated before retrieval).
-- **Serves** results two ways: a search bar (`/api/v1/search`) and a province → district → municipality drill-down map with content-density heatmaps (`/api/v1/news`).
+- **Crawls** the Nepali web — news portals, central/provincial/local government sites, government corporations and institutions, universities, banks and corporations, and other `.np`/Nepal-based websites (Go crawler on Temporal, robots.txt-compliant, JavaScript rendering with headless Chrome; ~9.8k seeded sites).
+- **Processes** every crawled site on Spark: ClamAV malware scan, Devanagari/English text extraction, language detection, deduplication and LaBSE embeddings, saved to PostgreSQL.
+- **Geo-tags** pages of local-government sites with their municipality/district/province (gazetteer of all 753 local bodies). Tagging pages by the places they mention is not implemented yet.
+- **Indexes** content with a hybrid ranking pipeline: Okapi BM25 (OpenSearch) fused with dense multilingual embeddings (LaBSE on pgvector) by reciprocal rank fusion and reranked with LightGBM, so a query in Nepali or English finds pages in either language (single-language queries are also machine-translated for the lexical part).
+- **Serves** results through a REST API (`/api/v1/search`, geo filters) and a Next.js UI with a search page, an interactive map of Nepal and an admin dashboard.
 
 ## Project layout
 
 | Directory | Purpose |
 | --- | --- |
 | [`ui/`](ui/) | Next.js frontend — search bar and interactive Nepal map (Leaflet/MapLibre). |
-| [`api/`](api/) | FastAPI backend serving search and geo-filtered content APIs. |
+| [`api/`](api/) | FastAPI gateway: search (over gRPC), geography, admin login and dashboard data. |
 | [`database/`](database/) | `pgs-db` — a standalone, installable Python package (SQLAlchemy models + Pydantic schemas) shared across backend services. Framework-independent, not tied to FastAPI. |
 | [`scraper/`](scraper/) | Go-based distributed crawler for Nepali websites (news, government, education, corporate, and other `.np`/Nepal-based sites). |
-| [`ETL/`](ETL/) | Extraction/transform pipelines (text cleaning, geo-tagging, embedding generation) feeding the search index. |
-| [`search-engine/`](search-engine/) | Search/ranking index configuration (Elasticsearch/Qdrant) and hybrid BM25 + dense-embedding scoring. |
-| [`terraform/`](terraform/) | Infrastructure as code for provisioning (bare-metal and cloud). |
+| [`ETL/`](ETL/) | Airflow DAGs, the Temporal ETL worker and the PySpark per-site pipeline (scan, extraction, embeddings, save to PostgreSQL). |
+| [`search-engine/`](search-engine/) | gRPC search service (BM25 on OpenSearch + pgvector, translation, reranking) and the PostgreSQL -> OpenSearch indexer. |
+| [`nginx/`](nginx/) | Reverse proxy: the stack's web entry point. |
 | [`k8/`](k8/) | Kubernetes manifests (Kustomize) for the whole stack; see `k8/README.md`. |
+| [`docs/`](docs/) | System architecture and operations. |
+| [`tests/e2e/`](tests/e2e/) | End-to-end check of the data path on a running stack. |
 
 ## Getting started
 
@@ -46,10 +51,12 @@ those start. The Kafka topic is created by its first event.
 
 | Service | URL on the host | Notes |
 | --- | --- | --- |
-| API | http://localhost:8000 | `api/Dockerfile` |
+| API | http://localhost:8000 (docs: `/docs`) | `api/Dockerfile` |
 | Airflow | http://localhost:8080 | ETL orchestration (`ETL/Dockerfile`); login from `.env` |
 | PostgreSQL 16 + PostGIS + pgvector | `localhost:5432` | `database/Dockerfile`; schema owned by `pgs-db` migrations |
-| OpenSearch 2.19 | http://localhost:9200 | security plugin disabled (local only); 2.x for the ETL index's `nmslib` k-NN engine |
+| OpenSearch 2.19 | http://localhost:9200 | security plugin disabled (local only); index `np_web_pages` |
+| Temporal UI | http://localhost:8233 | crawl and ETL workflows |
+| Spark master UI | http://localhost:8090 | the ETL's Spark cluster |
 | Kafka 3.8 (KRaft) | `localhost:9092` | containers use `kafka:29092` |
 | ClamAV | `localhost:3310` | malware scan for ETL intake; first start downloads signatures |
 
@@ -60,9 +67,9 @@ Optional parts are behind Compose profiles. Enable them with `--profile <name>`,
 | --- | --- | --- |
 | `scraper` | Go crawler (`scraper/Dockerfile`): LocalStack S3 + browser (http://localhost:8081), headless Chrome, worker, documents API (http://localhost:8082/docs) | Airflow's `scraper_crawl_schedule` crawls every website in `domains` every 30 minutes; crawl now with `docker compose exec airflow-scheduler airflow dags trigger scraper_crawl_schedule` |
 | `scraper-sharded` | the same, with three host-sharded workers | see `scraper/docs/SCALING.md` |
-| `search` | gRPC search engine (`search-engine/Dockerfile`, :50051) + index setup | needs ~3 GB RAM; downloads ~2.5 GB of models on first start |
-| `ui` | Next.js UI (`ui/Dockerfile`) behind nginx on http://localhost (port 80, `HTTP_PORT`; any domain pointed at the machine works too, `nginx/default.conf`), and directly on http://localhost:3000 (`UI_PORT`) | |
-| `tools` | OpenSearch Dashboards (http://localhost:5601), `opensearch-indexer` | one-shot tools run with `docker compose run --rm <name>` |
+| `search` | gRPC search engine (`search-engine/Dockerfile`, :50051) + search indexer | needs ~5 GB RAM; downloads ~4.5 GB of models (NLLB, LaBSE) on first start |
+| `ui` | Next.js UI (`ui/Dockerfile`) behind nginx on http://localhost (port 80, `HTTP_PORT`; nginx also routes `/api/v1/` to the API; any domain pointed at the machine works too, `nginx/default.conf`), and directly on http://localhost:3000 (`UI_PORT`) | admin login needs `API_AUTH_SECRET` and an account (`docker compose run --rm db-migrate python scripts/create_admin.py <user> --email <addr>`) |
+| `tools` | OpenSearch Dashboards (http://localhost:5601) | |
 
 All published ports bind to `127.0.0.1`. Containers reach each other by service name
 (`postgres`, `kafka`, `opensearch`, `clamav`, `temporal`, `s3`, `search-engine`). `docker compose down` stops the stack;
@@ -88,8 +95,8 @@ kubectl apply -k k8/
 
 Each service has its own setup docs in its directory. Quick summary:
 
-- **UI**: `cd ui && npm install && npm run dev`
-- **API**: `source .venv/bin/activate && uvicorn api.main:app --app-dir . --reload` (root-level `.venv`; see below)
+- **UI**: `cd ui && npm install && API_INTERNAL_URL=http://localhost:8000 npm run dev`
+- **API**: `source .venv/bin/activate && DATABASE_URL=... PYTHONPATH=api/src:search-engine/src uvicorn pgs_api.main:app --reload` (root-level `.venv`; see below)
 - **Database package**: `pip install -e ./database` — installs `pgs-db`, importable from any Python project (`import pgs_db`)
 - **Scraper**: `cd scraper && go run ./cmd/scraper`
 
@@ -100,13 +107,13 @@ A single virtual environment at the repo root (`.venv/`) is shared by the API an
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ./database
-pip install fastapi "uvicorn[standard]"
+pip install -c database/constraints.txt -e "./database[postgres,auth]"
+pip install -r api/requirements.txt ruff pyright pytest httpx
 ```
 
 ### Linting, formatting & type checking
 
-Python code (`api/`, `database/src/`) is kept strictly typed and consistently formatted using [Ruff](https://docs.astral.sh/ruff/) (linting + formatting, replacing Black/Flake8/isort) and [Pyright](https://microsoft.github.io/pyright/) (strict mode). Config lives in the root [`pyproject.toml`](pyproject.toml).
+Python code is linted with Ruff everywhere (`ruff check .`); `api/` and `database/src/` are also kept strictly typed and consistently formatted using [Ruff](https://docs.astral.sh/ruff/) (linting + formatting, replacing Black/Flake8/isort) and [Pyright](https://microsoft.github.io/pyright/) (strict mode). Config lives in the root [`pyproject.toml`](pyproject.toml).
 
 ```bash
 source .venv/bin/activate

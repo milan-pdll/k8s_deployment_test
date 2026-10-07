@@ -14,3 +14,10 @@ data:
   CLAMD_PORT: "3310"
   SEARCH_GRPC_HOST: search-engine
   SEARCH_GRPC_PORT: "50051"
+  TEMPORAL_ADDRESS: temporal:7233
+  OPENSEARCH_INDEX: np_web_pages
+  # Documents (ETL) and queries (search engine) are embedded with the same model AND
+  # revision; see docs/ARCHITECTURE.md.
+  EMBEDDING_MODEL_NAME: sentence-transformers/LaBSE
+  EMBEDDING_MODEL_REVISION: 836121a0533e5664b21c7aacc5d22951f2b8b25b
+  EMBEDDING_DIMENSIONS: "768"

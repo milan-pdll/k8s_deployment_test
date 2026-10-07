@@ -1,13 +1,18 @@
 """Database roles: one per service, each with only the privileges it needs.
 
-| Role | Used by | Can write |
-|---|---|---|
-| `pgs_scraper` | Go scraper | Bronze (`crawl_runs`, `crawled_documents`, `stored_files`), `domains` |
-| `pgs_etl` | Spark / ETL workers | Bronze processing state, Silver, reference contact fields |
-| `pgs_search` | search service / indexer | `pages` indexing state |
-| `pgs_api` | FastAPI gateway | admin tables, domains, quick links, quarantine, search log, labels |
-| `pgs_jobs` | `python -m pgs_db.jobs` | S3 -> Bronze ingest, Gold summaries and scores, log retention |
-| `pgs_readonly` | analysts, dashboards | nothing |
+Role -- used by -- can write:
+
+- `pgs_scraper` -- the Go scraper, if it writes Postgres directly -- Bronze
+  (`crawl_runs`, `crawled_documents`, `stored_files`), `domains`.
+- `pgs_etl` -- the ETL worker (Spark driver) and the Airflow DAGs -- Bronze (the scraper
+  writes only S3, so the ETL saves each page's Document), Silver, unknown `domains`,
+  reference contact fields.
+- `pgs_search` -- the search engine and the search indexer -- `pages` indexing state.
+- `pgs_api` -- the FastAPI gateway -- admin tables, domains, quick links, quarantine,
+  search log, labels.
+- `pgs_jobs` -- `python -m pgs_db.jobs` -- S3 -> Bronze ingest, Gold summaries and
+  scores, log retention.
+- `pgs_readonly` -- analysts, dashboards -- nothing.
 
 Every service may append to `error_logs`. Only `pgs_api` can read `admin_users`
 (password hashes). The roles are created LOGIN without a password: an operator sets
@@ -77,11 +82,15 @@ PRIVILEGES: dict[str, dict[str, str]] = {
         "error_logs": "INSERT",
     },
     "pgs_etl": {
-        "crawled_documents": "UPDATE",
+        # save_transformed(bronze_document=...) upserts the crawl run and the page's
+        # Bronze row: the scraper writes only S3 (ETL/spark/site_pipeline.py).
+        "crawl_runs": "INSERT, UPDATE",
+        "crawled_documents": "INSERT, UPDATE",
         "stored_files": "UPDATE",
         **dict.fromkeys(_SILVER, "INSERT, UPDATE, DELETE"),
         "local_bodies": "UPDATE",  # contact backfill
-        "domains": "UPDATE",  # link a domain to its local body
+        # Register a crawled host that is not seeded yet; link a domain to its local body.
+        "domains": "INSERT, UPDATE",
         "error_logs": "INSERT",
     },
     "pgs_search": {
@@ -132,7 +141,7 @@ def _grant(privileges: str, table: str, role: str) -> str:
 
 def statements() -> list[str]:
     """The SQL that brings every role's privileges up to the matrix above."""
-    sql = []
+    sql: list[str] = []
     for role, timeout in ROLES.items():
         sql.append(
             f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{role}') "
