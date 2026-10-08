@@ -5,8 +5,8 @@
 #
 # Manifests are grouped by resource kind, one resource per file (services/, deployments/,
 # configmaps/, ...). The default stack below is the same set of services as
-# `docker compose up`; the optional parts at the end mirror the compose profiles --
-# uncomment a block to enable it. See k8/README.md.
+# `docker compose up`; search and the UI/web gateway are included by default. The optional
+# parts at the end can be enabled by uncommenting a whole block. See k8/README.md.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
@@ -73,16 +73,17 @@ resources:
   - jobs/airflow-init.yaml
 
   # ================================================================================
-  # Optional parts (compose profiles). Uncomment a whole block to enable it.
+  # Search and the UI/web gateway are enabled by default; remaining optional parts can be
+  # enabled by uncommenting a whole block.
   # ================================================================================
   # --- search: gRPC search engine (search-engine:50051) and the search indexer
   #     (PostgreSQL Silver -> OpenSearch). Needs ~5 GB RAM; the first start downloads
   #     ~4.5 GB of models.
-  # - persistentvolumeclaims/search-models.yaml
-  # - services/search-engine.yaml
-  # - deployments/search-engine.yaml
-  # - deployments/search-indexer.yaml
-  # - networkpolicies/search-engine-ingress.yaml   # only the api may call the gRPC port
+  - persistentvolumeclaims/search-models.yaml
+  - services/search-engine.yaml
+  - deployments/search-engine.yaml
+  - deployments/search-indexer.yaml
+  - networkpolicies/search-engine-ingress.yaml   # only the api may call the gRPC port
 
   # --- scraper: Go crawler, LocalStack S3 (+browser) and headless Chrome. The worker
   #     writes pages to S3 and publishes one event per crawled website to Kafka
@@ -111,12 +112,12 @@ resources:
   # - statefulsets/scraper-worker-sharded.yaml
 
   # --- ui & web gateway: Next.js UI, Nginx reverse proxy (NodePort 30080), and HA Cloudflare tunnel.
-  # - configmaps/nginx-config.yaml
-  # - services/ui.yaml
-  # - services/nginx.yaml
-  # - deployments/ui.yaml
-  # - deployments/nginx.yaml
-  # - deployments/cloudflared.yaml
+  - configmaps/nginx-config.yaml
+  - services/ui.yaml
+  - services/nginx.yaml
+  - deployments/ui.yaml
+  - deployments/nginx.yaml
+  - deployments/cloudflared.yaml
 
   # --- tools: OpenSearch Dashboards. (One-off tools are Jobs in jobs/on-demand/.)
   # - services/opensearch-dashboards.yaml

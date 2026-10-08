@@ -2,9 +2,9 @@
 
 Kubernetes manifests for the whole project, written with Kustomize (built into `kubectl`).
 This is a **single-node, non-HA** setup: one replica of everything and ReadWriteOnce
-volumes, aimed at Docker Desktop's Kubernetes. It runs the same services as the root
-`docker-compose.yml`, with one difference: **Airflow uses the KubernetesExecutor, so every
-DAG task runs in its own pod**.
+volumes, aimed at Docker Desktop's Kubernetes. The default manifest includes the search
+engine and UI/web gateway, alongside the services in the root `docker-compose.yml`. One
+difference: **Airflow uses the KubernetesExecutor, so every DAG task runs in its own pod**.
 
 ## Prerequisites
 
@@ -13,20 +13,21 @@ DAG task runs in its own pod**.
   `kubectl` pointing at it: `kubectl config use-context docker-desktop`.
 - The project images, built with Compose from the repository root:
   ```bash
-  docker compose build                                  # default stack
-  docker compose --profile scraper --profile search build   # images for the optional parts you enable
+  docker compose build                                  # core images
+  docker compose --profile ui --profile search build    # UI and search images enabled by default in Kustomize
   ```
   They are tagged `pgs-search-engine/<name>:local` and used as is (`imagePullPolicy:
   IfNotPresent`). To use a registry instead, push them and set `images:` in
   `kustomization.yaml` and the task-pod image in `configmaps/airflow-pod-template.yaml`.
-- Memory: the default stack requests ~4.6 GiB, plus up to 3 GiB per running Airflow task
-  (LaBSE embeddings). Docker Desktop on WSL gets half the host RAM by default; raise it in
-  `%UserProfile%\.wslconfig` (`[wsl2]` `memory=12GB`) before enabling optional parts.
+- Memory: the core stack requests ~4.6 GiB; search adds about 5 GiB and downloads ~4.5 GB
+  of models on first start. Allow up to 3 GiB per running Airflow task (LaBSE embeddings).
+  Docker Desktop on WSL gets half the host RAM by default; raise it in
+  `%UserProfile%\.wslconfig` (`[wsl2]` `memory=12GB`) before deploying the full default stack.
 
 ## Deploy
 
 ```bash
-cp k8/secrets/secrets.env.example k8/secrets/secrets.env   # once; change the passwords
+./scripts/prepare-secrets.sh                              # once; generates required secrets
 kubectl apply -k k8/
 kubectl -n pgs-search-engine get pods -w
 ```
@@ -67,17 +68,18 @@ kubectl -n pgs-search-engine get pods -l app.kubernetes.io/name=airflow-task -w
 kubectl -n pgs-search-engine logs deploy/etl-worker -f                 # one summary per site
 ```
 
-## Optional parts (compose profiles)
+## Kustomize components
 
-They are commented-out blocks at the end of `resources:` in `kustomization.yaml`: uncomment a
-whole block, then `kubectl apply -k k8/`.
+Search and the UI/web gateway are enabled by default. The remaining optional parts are
+commented-out blocks at the end of `resources:` in `kustomization.yaml`: uncomment a whole
+block, then `kubectl apply -k k8/`.
 
-| Block | Adds |
+| Component | Adds |
 | --- | --- |
-| `search` | gRPC search engine (`search-engine:50051`, gRPC health probes) and the search indexer |
+| `search` (default) | gRPC search engine (`search-engine:50051`, gRPC health probes) and the search indexer |
 | `scraper` | LocalStack S3 (+ browser), headless Chrome (with a NetworkPolicy keeping it off the cluster network), crawler worker, documents API |
 | `scraper-sharded` | with `scraper`: three host-sharded workers (StatefulSet) instead of the worker Deployment; also uncomment the `patches:` block |
-| `ui` | Next.js UI |
+| `ui` (default) | Next.js UI, Nginx gateway, Cloudflare tunnel |
 | `tools` | OpenSearch Dashboards |
 
 Temporal (with its own PostgreSQL and UI) and the Spark cluster are part of the default stack:

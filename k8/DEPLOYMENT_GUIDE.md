@@ -50,54 +50,39 @@ kubectl get sc
 
 ---
 
-### Step 2: Build & Distribute Container Images to all Nodes
+### Step 2: Configure Secrets
+
+On the machine where you will run `kubectl`, generate the Kubernetes secrets file once:
+```bash
+./scripts/prepare-secrets.sh
+```
+This copies `k8/secrets/secrets.env.example` to `k8/secrets/secrets.env` and generates random values for `API_AUTH_SECRET` and `AIRFLOW_SECRET_KEY`. Keep the generated file; it is gitignored and must exist before applying the manifests.
+
+---
+
+### Step 3: Build & Distribute Container Images to all Nodes
 On the node where Docker is installed (e.g. `k8s-worker-2`):
 
 1. **Build the images:**
    ```bash
    docker compose build                                   # Core stack: api, etl, db-migrate, postgres
    docker compose --profile ui build                      # Next.js UI
-   docker compose --profile search build                  # Optional: gRPC search engine
+   docker compose --profile search build                  # gRPC search engine
    ```
 
 2. **Distribute to all 3 worker nodes' `containerd` runtime:**
    Using the automated distributor script (uses passwordless SSH to stream images directly into `containerd`):
    ```bash
-   ./scripts/distribute-images.sh import core
-   # If search engine is also built:
-   # ./scripts/distribute-images.sh import search
+   ./scripts/distribute-images.sh import search
    ```
-
----
-
-### Step 3: Configure Secrets & Enable Desired Profiles
-
-1. **Generate Secrets:**
-   ```bash
-   ./scripts/prepare-secrets.sh
-   ```
-   *(This copies `k8/secrets/secrets.env.example` to `k8/secrets/secrets.env` and injects random secure tokens for `API_AUTH_SECRET` and `AIRFLOW_SECRET_KEY`.)*
-
-2. **Enable Web Gateway (UI + Nginx + Cloudflare Tunnel):**
-   In `k8/kustomization.yaml`, uncomment the `ui & web gateway` block:
-   ```yaml
-     # --- ui & web gateway
-     - configmaps/nginx-config.yaml
-     - services/ui.yaml
-     - services/nginx.yaml
-     - deployments/ui.yaml
-     - deployments/nginx.yaml
-     - deployments/cloudflared.yaml
-   ```
+   The `search` distribution includes core images (including UI) and the search engine image.
 
 ---
 
 ### Step 4: Apply Manifests to the Cluster
 
-```bash
-./scripts/k8s-deploy.sh
-```
-Or directly:
+Search and the UI/web gateway are enabled by default in `k8/kustomization.yaml`. Once image distribution is complete, this is the only deployment command needed:
+
 ```bash
 kubectl apply -k k8/
 ```

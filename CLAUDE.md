@@ -112,7 +112,7 @@ tests/e2e/run_e2e.sh                                 # end-to-end check (needs s
 ## Kubernetes (`k8/`)
 
 ```bash
-cp k8/secrets/secrets.env.example k8/secrets/secrets.env && kubectl apply -k k8/
+./scripts/prepare-secrets.sh && kubectl apply -k k8/
 kubectl kustomize k8/ | kubeconform -strict -kubernetes-version 1.30.0 -summary   # validate
 ```
 
@@ -122,8 +122,9 @@ kubectl kustomize k8/ | kubeconform -strict -kubernetes-version 1.30.0 -summary 
   goes in its kind's folder as `<name>.yaml` and is listed in `k8/kustomization.yaml`.
 - Same services as compose (incl. `spark-master`, `spark-worker`, `etl-worker`,
   `search-indexer`), except that Airflow and Temporal keep their own PostgreSQL StatefulSets
-  (`airflow-db`, `temporal-db`) instead of sharing the application server. The compose
-  profiles are commented-out blocks at the end of `resources:` in `k8/kustomization.yaml`.
+  (`airflow-db`, `temporal-db`) instead of sharing the application server. Search and the
+  UI/web gateway are enabled by default; scraper and tools remain optional blocks at the end
+  of `resources:` in `k8/kustomization.yaml`.
   One-shot tools are Jobs in `k8/jobs/on-demand/` (`generateName`, run with
   `kubectl create -f`); `k8/jobs/` itself holds the bootstrap Jobs.
 - **Airflow runs on the KubernetesExecutor**: the scheduler launches one pod per task from the
