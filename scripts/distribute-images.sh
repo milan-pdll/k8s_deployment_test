@@ -66,8 +66,13 @@ if [ "${MODE}" == "import" ]; then
 
     echo "--> Packaging and distributing image: ${img}"
     for node_ip in "${WORKER_NODES[@]}"; do
-      echo "    -> Streaming to node ${node_ip}..."
-      docker save "${img}" | ssh -o StrictHostKeyChecking=no "${SSH_USER}@${node_ip}" "sudo ctr -n k8s.io images import -"
+      echo "    -> Importing to node ${node_ip}..."
+      if ip addr | grep -q "${node_ip}"; then
+        # Local node: import directly without SSH
+        docker save "${img}" | ctr -n k8s.io images import -
+      else
+        docker save "${img}" | ssh -o StrictHostKeyChecking=no "${SSH_USER}@${node_ip}" "sudo ctr -n k8s.io images import -"
+      fi
     done
   done
 
