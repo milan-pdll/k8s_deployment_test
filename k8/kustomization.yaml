@@ -110,10 +110,13 @@ resources:
   # - services/scraper-worker-sharded.yaml
   # - statefulsets/scraper-worker-sharded.yaml
 
-  # --- ui: Next.js UI. Route /api/v1/ and /health/ to the api Service and the rest to
-  #     the ui Service on the same host (Ingress or proxy), as nginx does in compose.
+  # --- ui & web gateway: Next.js UI, Nginx reverse proxy (NodePort 30080), and HA Cloudflare tunnel.
+  # - configmaps/nginx-config.yaml
   # - services/ui.yaml
+  # - services/nginx.yaml
   # - deployments/ui.yaml
+  # - deployments/nginx.yaml
+  # - deployments/cloudflared.yaml
 
   # --- tools: OpenSearch Dashboards. (One-off tools are Jobs in jobs/on-demand/.)
   # - services/opensearch-dashboards.yaml

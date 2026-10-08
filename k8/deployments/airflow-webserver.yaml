@@ -23,6 +23,15 @@ spec:
         fsGroup: 0
         seccompProfile:
           type: RuntimeDefault
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app.kubernetes.io/name
+                    operator: In
+                    values: ["airflow-scheduler"]
+              topologyKey: "kubernetes.io/hostname"
       initContainers:
         - name: wait-for-migrations
           image: pgs-search-engine/etl

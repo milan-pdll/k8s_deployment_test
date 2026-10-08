@@ -105,8 +105,8 @@ spec:
             capabilities: { drop: ["ALL"] }
           # LaBSE (~1.8 GB) + the Spark driver JVM.
           resources:
-            requests: { cpu: 500m, memory: 3Gi }
-            limits: { memory: 5Gi }
+            requests: { cpu: 300m, memory: 1536Mi }
+            limits: { memory: 2800Mi }
       volumes:
         - name: models
           persistentVolumeClaim:

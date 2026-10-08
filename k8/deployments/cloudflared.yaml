@@ -1,0 +1,76 @@
+# Cloudflare Tunnel for PGS Search Engine.
+# Runs inside the cluster, persistently tunneling http://nginx:80 to the outside world
+# through the college firewall without requiring any inbound open ports or public IPs.
+#
+# MODE 1 (Quick Tunnel / trycloudflare.com):
+# Runs out-of-the-box without an account. Check generated URL with:
+#   kubectl -n pgs-search-engine logs -l app.kubernetes.io/name=cloudflared -f
+#
+# MODE 2 (Named / HA Production Tunnel):
+# Create a tunnel in the Cloudflare Zero Trust Dashboard, grab the token, and set:
+#   TUNNEL_TOKEN: <your-token> in k8/secrets/secrets.env
+# Then switch the container args below to: ["tunnel", "--no-autoupdate", "run", "--token", "$(TUNNEL_TOKEN)"]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  labels:
+    app.kubernetes.io/name: cloudflared
+spec:
+  replicas: 2 # HA: runs across nodes for zero downtime
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloudflared
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532 # nonroot user in cloudflare image
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cloudflared
+          image: cloudflare/cloudflared:2024.12.2
+          imagePullPolicy: IfNotPresent
+          # Default: Quick tunnel pointing to nginx gateway
+          args:
+            - tunnel
+            - --no-autoupdate
+            - --metrics
+            - 0.0.0.0:2000
+            - --url
+            - http://nginx:80
+          # For Named Tunnel (persistent custom domain), uncomment below and comment above:
+          # args:
+          #   - tunnel
+          #   - --no-autoupdate
+          #   - --metrics
+          #   - 0.0.0.0:2000
+          #   - run
+          #   - --token
+          #   - $(TUNNEL_TOKEN)
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: pgs-secrets
+                  key: CLOUDFLARE_TUNNEL_TOKEN
+                  optional: true
+          ports:
+            - name: metrics
+              containerPort: 2000
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { memory: 128Mi }
