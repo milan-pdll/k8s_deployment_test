@@ -39,7 +39,12 @@ echo "  Deployment initiated!"
 echo "=========================================================="
 echo "Accessing the Application:"
 echo "  1. Internal LAN Access (from college network):"
-echo "     http://10.20.62.101:30080  (or any worker IP:30080)"
+NODE_PORT="$(kubectl -n pgs-search-engine get svc nginx -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
+if [[ -n "${NODE_PORT}" ]]; then
+	echo "     http://10.20.62.101:${NODE_PORT}  (or any worker IP:${NODE_PORT})"
+else
+	echo "     Check the Nginx Service NodePort: kubectl -n pgs-search-engine get svc nginx"
+fi
 echo ""
 echo "  2. Public Internet Access (via HA Cloudflare Tunnel):"
 echo "     Check your tunnel URL with:"

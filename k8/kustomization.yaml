@@ -111,7 +111,7 @@ resources:
   # - services/scraper-worker-sharded.yaml
   # - statefulsets/scraper-worker-sharded.yaml
 
-  # --- ui & web gateway: Next.js UI, Nginx reverse proxy (NodePort 30080), and HA Cloudflare tunnel.
+  # --- ui & web gateway: Next.js UI, Nginx reverse proxy (NodePort), and HA Cloudflare tunnel.
   - configmaps/nginx-config.yaml
   - services/ui.yaml
   - services/nginx.yaml

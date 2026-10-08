@@ -90,8 +90,9 @@ a one-off crawl is a Job in `jobs/on-demand/` (`kubectl create -f`):
 
 ## Access from the host
 
-Every Service is ClusterIP (nothing is exposed outside the cluster); use port-forwards,
-which bind to localhost:
+Services are ClusterIP except for the Nginx NodePort gateway. Kubernetes assigns its port;
+see it with `kubectl -n pgs-search-engine get svc nginx`. For other services, use
+port-forwards, which bind to localhost:
 
 | Service | Command |
 | --- | --- |

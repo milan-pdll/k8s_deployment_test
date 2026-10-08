@@ -14,7 +14,7 @@ Your 6-node cluster differs significantly from a local Docker Desktop setup. Her
 | **containerd Image Isolation** | Built Docker images on `worker-2` aren't visible to `worker-1` or `worker-3`'s `containerd`. | Added `scripts/distribute-images.sh` which directly streams images into all nodes via SSH and `ctr -n k8s.io images import`. |
 | **Storage Provisioner** | No dynamic CSI was present; PVCs/StatefulSets would stay `Pending`. | Added `k8/storage/local-path-storage.yaml` (Rancher local-path-provisioner), dynamically provisioning volumes on the 30GB+ VM disks under `/opt/local-path-provisioner`. |
 | **Multi-Node Airflow Logs** | Airflow logs PVC is `ReadWriteOnce`. If tasks land on worker-3 while scheduler is on worker-2, pods crash with `Multi-Attach error`. | Added `podAffinity` to `airflow-webserver` and `airflow-pod-template.yaml` ensuring all Airflow pods are co-located on the same node. |
-| **Public Exposure & Ingress** | A temporary, manual `cloudflared` process on `cp-1` with random URL. | Added an in-cluster **Nginx Reverse Proxy** (`NodePort: 30080` for college LAN) and an **HA In-Cluster Cloudflare Tunnel** Deployment (`k8/deployments/cloudflared.yaml`). |
+| **Public Exposure & Ingress** | A temporary, manual `cloudflared` process on `cp-1` with random URL. | Added an in-cluster **Nginx Reverse Proxy** (Kubernetes-assigned NodePort for college LAN) and an **HA In-Cluster Cloudflare Tunnel** Deployment (`k8/deployments/cloudflared.yaml`). |
 
 ---
 
@@ -97,10 +97,12 @@ kubectl -n pgs-search-engine get pods -o wide -w
 ## 4. How to Access the Cluster
 
 ### A. College LAN Access (Zero Internet Dependency)
-The Nginx gateway is exposed as a NodePort on port **`30080`**. Open any node IP in your browser:
-- **Web UI & API:** `http://10.20.62.101:30080` (or `http://10.20.62.103:30080`, `http://10.20.62.105:30080`)
-- **API Docs (FastAPI):** `http://10.20.62.101:30080/api/v1/docs`
-- **Health Check:** `http://10.20.62.101:30080/health/ready`
+Kubernetes assigns the Nginx NodePort automatically. Find it with:
+```bash
+kubectl -n pgs-search-engine get svc nginx
+```
+Open `http://<node-ip>:<PORT>` using any node IP and the port shown in the `PORT(S)` column.
+For example, append `/api/v1/docs` for the API docs or `/health/ready` for the health check.
 
 ### B. Public Internet Access (HA Cloudflare Tunnel)
 The `cloudflared` deployment runs 2 replicas inside Kubernetes.

@@ -1,6 +1,6 @@
 # Unified entry point service for PGS Search Engine web UI and API.
 # Accessible in-cluster at http://nginx:80
-# Accessible from college LAN on any node IP at port 30080 (e.g. http://10.20.62.101:30080)
+# Accessible from college LAN on any node IP at the NodePort assigned by Kubernetes.
 apiVersion: v1
 kind: Service
 metadata:
@@ -15,4 +15,3 @@ spec:
     - name: http
       port: 80
       targetPort: http
-      nodePort: 30080
