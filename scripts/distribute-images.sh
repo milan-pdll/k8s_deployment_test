@@ -39,6 +39,20 @@ echo "=========================================================="
 MODE="${1:-import}"
 PROFILE="${2:-core}" # core, search, all
 
+DOCKER=(docker)
+if ! docker info > /dev/null 2>&1; then
+  echo "==> Docker access requires sudo; authenticating once..."
+  if ! sudo -v; then
+    echo "ERROR: Cannot authenticate for Docker access."
+    exit 1
+  fi
+  DOCKER=(sudo docker)
+fi
+if ! "${DOCKER[@]}" info > /dev/null 2>&1; then
+  echo "ERROR: Cannot connect to the Docker daemon."
+  exit 1
+fi
+
 IMAGES=("${CORE_IMAGES[@]}")
 if [ "${PROFILE}" == "search" ] || [ "${PROFILE}" == "all" ]; then
   IMAGES+=("${OPTIONAL_SEARCH_IMAGES[@]}")
@@ -59,9 +73,9 @@ if [ "${MODE}" == "import" ]; then
   echo ""
 
   for img in "${IMAGES[@]}"; do
-    if ! docker image inspect "${img}" > /dev/null 2>&1; then
-      echo "WARNING: Docker image '${img}' not found locally. Skipping."
-      continue
+    if ! "${DOCKER[@]}" image inspect "${img}" > /dev/null 2>&1; then
+      echo "ERROR: Required Docker image '${img}' is missing locally."
+      exit 1
     fi
 
     echo "--> Packaging and distributing image: ${img}"
@@ -69,9 +83,9 @@ if [ "${MODE}" == "import" ]; then
       echo "    -> Importing to node ${node_ip}..."
       if ip addr | grep -q "${node_ip}"; then
         # Local node: import directly without SSH
-        docker save "${img}" | ctr -n k8s.io images import -
+        "${DOCKER[@]}" save "${img}" | sudo ctr -n k8s.io images import -
       else
-        docker save "${img}" | ssh -o StrictHostKeyChecking=no "${SSH_USER}@${node_ip}" "sudo ctr -n k8s.io images import -"
+        "${DOCKER[@]}" save "${img}" | ssh -o StrictHostKeyChecking=no "${SSH_USER}@${node_ip}" "sudo ctr -n k8s.io images import -"
       fi
     done
   done
@@ -85,8 +99,8 @@ elif [ "${MODE}" == "registry" ]; then
   for img in "${IMAGES[@]}"; do
     TARGET_TAG="${REGISTRY}/${img}"
     echo "--> Tagging ${img} as ${TARGET_TAG}"
-    docker tag "${img}" "${TARGET_TAG}"
-    docker push "${TARGET_TAG}"
+    "${DOCKER[@]}" tag "${img}" "${TARGET_TAG}"
+    "${DOCKER[@]}" push "${TARGET_TAG}"
   done
   echo "==> Registry push complete."
 else
